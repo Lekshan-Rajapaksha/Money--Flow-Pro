@@ -1208,7 +1208,6 @@ class _HomePageState extends State<HomePage> {
       children: [
         Text(title,
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        TextButton(onPressed: () {}, child: const Text("View All")),
       ],
     ).animate(delay: 600.ms).fadeIn();
   }
@@ -2810,15 +2809,6 @@ class ProfilePage extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20.0),
       child: Column(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.qr_code_scanner, color: Colors.grey),
-                onPressed: () {},
-              ),
-            ],
-          ),
           // MODIFIED: Added GestureDetector to change photo
           GestureDetector(
             onTap: _pickImage,
@@ -2987,24 +2977,6 @@ class ProfilePage extends StatelessWidget {
                 ),
               ));
             },
-          ),
-          SettingsListItem(
-            icon: Icons.people,
-            iconColor: Colors.purple,
-            title: "Theme Manager",
-            onTap: () {},
-          ),
-          SettingsListItem(
-            icon: Icons.pie_chart,
-            iconColor: Colors.red,
-            title: "Budget",
-            onTap: () {},
-          ),
-          SettingsListItem(
-            icon: Icons.shortcut,
-            iconColor: Colors.deepOrange,
-            title: "Shortcuts Log",
-            onTap: () {},
           ),
 
         ],
