@@ -16,7 +16,7 @@ if (keyPropertiesFile.exists()) {
 android {
     namespace = "com.lekshan.moneyflow"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -47,14 +47,12 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
         }
     }
 
-    packaging {
-        jniLibs {
-            keepDebugSymbols += setOf("**/*.so")
-        }
-    }
 }
 
 flutter {

@@ -11,7 +11,48 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';// NEW: For picking images from gallery
 
-// --- Models ---
+// A registry of all IconData that may be stored/loaded from JSON.
+// This const map lets Flutter's tree-shaker know at compile time which
+// icons the app can use, avoiding the "non-constant IconData" build error.
+const Map<int, IconData> _kIconRegistry = {
+  // income icons
+  0xf02c6: Icons.work_outline_rounded,
+  0xf4b1: Icons.watch_later_outlined,
+  0xf51f: Icons.account_balance_rounded,
+  0xf61a: Icons.card_giftcard_rounded,
+  0xf8d9: Icons.more_horiz_rounded,
+  // expense icons
+  0xf736: Icons.fastfood_rounded,
+  0xf016f: Icons.shopping_bag_rounded,
+  0xf6b3: Icons.directions_car_rounded,
+  0xf00e1: Icons.receipt_long_rounded,
+  0xf8e7: Icons.movie_rounded,
+  0xf624: Icons.category_rounded,
+  // extra palette icons
+  0xf7f5: Icons.home_rounded,
+  0xf7df: Icons.health_and_safety_rounded,
+  0xf012e: Icons.school_rounded,
+  0xf0077: Icons.pets_rounded,
+  0xf0078: Icons.phone_android_rounded,
+  0xf773: Icons.flight_takeoff_rounded,
+  0xf767: Icons.fitness_center_rounded,
+  0xf8ed: Icons.music_note_rounded,
+  0xf02c7: Icons.work_rounded,
+  0xf02a3: Icons.watch_later_rounded,
+  // misc icons used in the app
+  0xf520: Icons.account_balance_wallet_rounded,
+  0xe553: Icons.savings,
+  0xf336: Icons.savings_outlined,
+  0xe040: Icons.account_balance,
+  0xf0071: Icons.person_rounded,
+  0xe491: Icons.person,
+  0xe402: Icons.more_horiz,
+};
+
+/// Returns the [IconData] for the given [codePoint].
+/// Falls back to [Icons.category_rounded] if the code is not in the registry.
+IconData _iconFromCodePoint(int codePoint) =>
+    _kIconRegistry[codePoint] ?? Icons.category_rounded;
 
 /// Represents a user-defined category for transactions.
 class Category {
@@ -44,14 +85,11 @@ class Category {
     id: json['id'],
     name: json['name'],
     color: Color(json['color']),
-    icon: IconData(
-      json['icon_code'],
-      fontFamily: json['icon_font_family'],
-      fontPackage: json['icon_font_package'],
-    ),
+    icon: _iconFromCodePoint(json['icon_code'] as int),
     isExpense: json['isExpense'] ?? true, // NEW: Default to true for backward compatibility
   );
 }
+
 
 
 /// Represents a single financial transaction.
