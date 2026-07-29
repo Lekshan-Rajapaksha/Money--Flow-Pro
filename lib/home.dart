@@ -311,7 +311,8 @@ class _MainPageState extends State<MainPage> {
   List<Loan> _loans = [];
   List<FixedDeposit> _fixedDeposits = [];
   double _savingsPot = 0.0;
-  double _homeChartMaxY = 2000.0; // NEW: State for Home page chart limit
+  double _expenseChartMaxY = 2000.0; // NEW: State for expense chart limit
+  double _incomeChartMaxY = 2000.0; // NEW: State for income chart limit
 
   // Settings
   Currency _selectedCurrency = Currency.USD;
@@ -587,10 +588,17 @@ class _MainPageState extends State<MainPage> {
     _persistenceService.saveDailyLimit(limit ?? 0.0);
   }
 
-  // NEW: Method to handle updating the home page chart limit
-  void _updateHomeChartMaxY(double newValue) {
+  // NEW: Method to handle updating the expense chart limit
+  void _updateExpenseChartMaxY(double newValue) {
     setState(() {
-      _homeChartMaxY = newValue;
+      _expenseChartMaxY = newValue;
+    });
+  }
+
+  // NEW: Method to handle updating the income chart limit
+  void _updateIncomeChartMaxY(double newValue) {
+    setState(() {
+      _incomeChartMaxY = newValue;
     });
   }
 
@@ -681,8 +689,10 @@ class _MainPageState extends State<MainPage> {
             transactions: _transactions,
             currencySymbol: currencySymbol,
             categories: _categories,
-            selectedChartMaxY: _homeChartMaxY, // MODIFIED: Pass state down
-            onChartMaxYChanged: _updateHomeChartMaxY, // MODIFIED: Pass callback down
+            expenseChartMaxY: _expenseChartMaxY,
+            incomeChartMaxY: _incomeChartMaxY,
+            onExpenseChartMaxYChanged: _updateExpenseChartMaxY,
+            onIncomeChartMaxYChanged: _updateIncomeChartMaxY,
             dailyLimit: _dailyLimit, // NEW
           ),
           BudgetPage(
@@ -781,8 +791,10 @@ class HomePage extends StatefulWidget {
   final List<Transaction> transactions;
   final String currencySymbol;
   final List<Category> categories;
-  final double selectedChartMaxY; // NEW: Receive state from parent
-  final Function(double) onChartMaxYChanged; // NEW: Receive callback from parent
+  final double expenseChartMaxY;
+  final double incomeChartMaxY;
+  final Function(double) onExpenseChartMaxYChanged;
+  final Function(double) onIncomeChartMaxYChanged;
   final double? dailyLimit; // NEW
 
   const HomePage({
@@ -790,8 +802,10 @@ class HomePage extends StatefulWidget {
     required this.transactions,
     required this.currencySymbol,
     required this.categories,
-    required this.selectedChartMaxY,
-    required this.onChartMaxYChanged,
+    required this.expenseChartMaxY,
+    required this.incomeChartMaxY,
+    required this.onExpenseChartMaxYChanged,
+    required this.onIncomeChartMaxYChanged,
     this.dailyLimit,
   });
 
@@ -819,6 +833,43 @@ class _HomePageState extends State<HomePage> {
     // Initialize the controller to show the latest week first
     _currentWeekIndex = _weeklyData.isNotEmpty ? _weeklyData.length - 1 : 0;
     _chartPageController = PageController(initialPage: _currentWeekIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoScaleChartMaxY(_currentWeekIndex);
+    });
+  }
+
+  // NEW: Method to auto-scale the chart limit based on data
+  void _autoScaleChartMaxY(int weekIndex) {
+    if (_weeklyData.isEmpty) return;
+    final weekData = _weeklyData[weekIndex];
+    final chartData = _isShowingExpensesChart ? weekData.expenses : weekData.incomes;
+    final double maxChartValue = chartData.isNotEmpty ? chartData.reduce(max) : 0;
+    
+    double idealMaxY = _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY;
+    
+    // Only consider the profile's daily limit for expenses
+    if (_isShowingExpensesChart && widget.dailyLimit != null && widget.dailyLimit! > idealMaxY) {
+      idealMaxY = widget.dailyLimit!;
+    }
+    
+    if (maxChartValue > idealMaxY) {
+      idealMaxY = _chartMaxYOptions.firstWhere((option) => option >= maxChartValue, orElse: () => maxChartValue);
+    }
+    
+    final currentActiveMaxY = _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY;
+    final targetOption = _chartMaxYOptions.firstWhere((option) => option >= idealMaxY, orElse: () => _chartMaxYOptions.last);
+    
+    if (targetOption != currentActiveMaxY) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          if (_isShowingExpensesChart) {
+            widget.onExpenseChartMaxYChanged(targetOption);
+          } else {
+            widget.onIncomeChartMaxYChanged(targetOption);
+          }
+        }
+      });
+    }
   }
 
   @override
@@ -1078,16 +1129,18 @@ class _HomePageState extends State<HomePage> {
                   setState(() {
                     _currentWeekIndex = index;
                   });
+                  _autoScaleChartMaxY(index);
                 },
                 itemBuilder: (context, pageIndex) {
                   final weekData = _weeklyData[pageIndex];
                   final chartData = _isShowingExpensesChart ? weekData.expenses : weekData.incomes;
                   final barColor = _isShowingExpensesChart ? Colors.indigo.shade300 : Colors.green.shade300;
                   final trackColor = Colors.grey.shade200;
+                  final activeChartMaxY = _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY;
 
                   return BarChart(
                     BarChartData(
-                      maxY: widget.selectedChartMaxY * 1.1, // MODIFIED: Use property from widget
+                      maxY: activeChartMaxY * 1.1, // MODIFIED: Use activeChartMaxY
                       alignment: BarChartAlignment.spaceAround,
                       barTouchData: BarTouchData(
                         touchTooltipData: BarTouchTooltipData(
@@ -1106,7 +1159,8 @@ class _HomePageState extends State<HomePage> {
                             reservedSize: 50,
                             getTitlesWidget: (value, meta) {
                               if (value == 0) return Text('${widget.currencySymbol} 0', style: const TextStyle(color: Colors.grey, fontSize: 10));
-                              if (value == widget.selectedChartMaxY * 0.25 || value == widget.selectedChartMaxY * 0.5 || value == widget.selectedChartMaxY * 0.75 || value == widget.selectedChartMaxY) {
+                              // We use activeChartMaxY to place the grid labels
+                              if (value == activeChartMaxY * 0.25 || value == activeChartMaxY * 0.5 || value == activeChartMaxY * 0.75 || value == activeChartMaxY) {
                                 return Text(
                                   '${widget.currencySymbol} ${value.toInt()}',
                                   style: const TextStyle(color: Colors.grey, fontSize: 10),
@@ -1142,7 +1196,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                       borderData: FlBorderData(show: false),
                       gridData: const FlGridData(show: false),
-                      extraLinesData: widget.dailyLimit != null && widget.dailyLimit! > 0
+                      extraLinesData: _isShowingExpensesChart && widget.dailyLimit != null && widget.dailyLimit! > 0
                           ? ExtraLinesData(
                               horizontalLines: [
                                 HorizontalLine(
@@ -1169,7 +1223,7 @@ class _HomePageState extends State<HomePage> {
                                 borderRadius: const BorderRadius.all(Radius.circular(6)),
                                 backDrawRodData: BackgroundBarChartRodData(
                                   show: true,
-                                  toY: widget.selectedChartMaxY, // MODIFIED: Use property from widget
+                                  toY: activeChartMaxY, // MODIFIED: Use activeChartMaxY
                                   color: trackColor,
                                 )
                             ),
@@ -1187,10 +1241,10 @@ class _HomePageState extends State<HomePage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text("Daily Limit:", style: TextStyle(color: Colors.grey)),
+                const Text("Chart Limit:", style: TextStyle(color: Colors.grey)),
                 const SizedBox(width: 10),
                 DropdownButton<double>(
-                  value: widget.selectedChartMaxY, // MODIFIED: Use property from widget
+                  value: _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY,
                   underline: Container(), // Hides the default underline
                   items: _chartMaxYOptions.map((double value) {
                     return DropdownMenuItem<double>(
@@ -1200,7 +1254,11 @@ class _HomePageState extends State<HomePage> {
                   }).toList(),
                   onChanged: (newValue) {
                     if (newValue != null) {
-                      widget.onChartMaxYChanged(newValue); // MODIFIED: Call callback from widget
+                      if (_isShowingExpensesChart) {
+                        widget.onExpenseChartMaxYChanged(newValue);
+                      } else {
+                        widget.onIncomeChartMaxYChanged(newValue);
+                      }
                     }
                   },
                 ),
@@ -1218,6 +1276,7 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _isShowingExpensesChart = !_isShowingExpensesChart;
         });
+        _autoScaleChartMaxY(_currentWeekIndex);
       },
       child: Container(
         width: 100,
