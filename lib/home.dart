@@ -320,6 +320,7 @@ class _MainPageState extends State<MainPage> {
   String _nickname = "Nickname"; // NEW
   DateTime? _installDate; // NEW
   String? _profileImagePath; // NEW: To store the path of the profile image
+  double? _dailyLimit; // NEW: State for daily limit
 
 
   bool _isLoading = true; // To show a loading indicator
@@ -336,6 +337,7 @@ class _MainPageState extends State<MainPage> {
     final nickname = await _persistenceService.loadNickname();
     DateTime? installDate = await _persistenceService.loadInstallDate();
     final profileImagePath = await _persistenceService.loadProfileImagePath(); // NEW
+    final dailyLimit = await _persistenceService.loadDailyLimit(); // NEW
 
     // NEW: If install date doesn't exist, it's the first launch. Set and save it.
     if (installDate == null) {
@@ -357,6 +359,7 @@ class _MainPageState extends State<MainPage> {
       _nickname = nickname;
       _installDate = installDate;
       _profileImagePath = profileImagePath; // NEW
+      _dailyLimit = dailyLimit; // NEW
       _isLoading = false;
     });
   }
@@ -576,6 +579,14 @@ class _MainPageState extends State<MainPage> {
     _persistenceService.saveProfileImagePath(path);
   }
 
+  // NEW: Method to handle updating the daily limit
+  void _updateDailyLimit(double? limit) {
+    setState(() {
+      _dailyLimit = limit;
+    });
+    _persistenceService.saveDailyLimit(limit ?? 0.0);
+  }
+
   // NEW: Method to handle updating the home page chart limit
   void _updateHomeChartMaxY(double newValue) {
     setState(() {
@@ -672,6 +683,7 @@ class _MainPageState extends State<MainPage> {
             categories: _categories,
             selectedChartMaxY: _homeChartMaxY, // MODIFIED: Pass state down
             onChartMaxYChanged: _updateHomeChartMaxY, // MODIFIED: Pass callback down
+            dailyLimit: _dailyLimit, // NEW
           ),
           BudgetPage(
             currencySymbol: currencySymbol,
@@ -708,6 +720,8 @@ class _MainPageState extends State<MainPage> {
             onFactoryReset: _factoryReset,
             profileImagePath: _profileImagePath, // NEW
             onProfileImageChanged: _updateProfileImage, // NEW
+            dailyLimit: _dailyLimit, // NEW
+            onDailyLimitChanged: _updateDailyLimit, // NEW
           ),
         ],
       ),
@@ -769,6 +783,7 @@ class HomePage extends StatefulWidget {
   final List<Category> categories;
   final double selectedChartMaxY; // NEW: Receive state from parent
   final Function(double) onChartMaxYChanged; // NEW: Receive callback from parent
+  final double? dailyLimit; // NEW
 
   const HomePage({
     super.key,
@@ -777,6 +792,7 @@ class HomePage extends StatefulWidget {
     required this.categories,
     required this.selectedChartMaxY,
     required this.onChartMaxYChanged,
+    this.dailyLimit,
   });
 
   @override
@@ -1126,6 +1142,22 @@ class _HomePageState extends State<HomePage> {
                       ),
                       borderData: FlBorderData(show: false),
                       gridData: const FlGridData(show: false),
+                      extraLinesData: widget.dailyLimit != null && widget.dailyLimit! > 0
+                          ? ExtraLinesData(
+                              horizontalLines: [
+                                HorizontalLine(
+                                  y: widget.dailyLimit!,
+                                  color: Colors.redAccent,
+                                  strokeWidth: 2,
+                                  dashArray: [5, 5],
+                                  label: HorizontalLineLabel(
+                                    show: true,
+                                    labelResolver: (line) => 'Limit: ${widget.currencySymbol}${line.y.toStringAsFixed(0)}',
+                                  ),
+                                ),
+                              ],
+                            )
+                          : const ExtraLinesData(),
                       barGroups: chartData.asMap().entries.map((entry) {
                         return BarChartGroupData(
                           x: entry.key,
@@ -2749,6 +2781,8 @@ class ProfilePage extends StatelessWidget {
   final VoidCallback onFactoryReset;
   final String? profileImagePath; // NEW
   final Function(String) onProfileImageChanged;
+  final double? dailyLimit; // NEW
+  final Function(double?) onDailyLimitChanged; // NEW
   final Uri _url = Uri.parse("https://lexora-f693c.web.app/store.html");// NEW
 
   ProfilePage({
@@ -2772,6 +2806,8 @@ class ProfilePage extends StatelessWidget {
     required this.onFactoryReset,
     this.profileImagePath, // NEW
     required this.onProfileImageChanged, // NEW
+    this.dailyLimit, // NEW
+    required this.onDailyLimitChanged, // NEW
   });
 
   Future<void> _launchUrl() async {
@@ -2779,6 +2815,47 @@ class ProfilePage extends StatelessWidget {
       throw Exception('Could not launch $_url');
     }
   }
+
+  void _showDailyLimitDialog(BuildContext context) {
+    final TextEditingController _limitController = TextEditingController(
+      text: dailyLimit != null && dailyLimit! > 0 ? dailyLimit.toString() : '',
+    );
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Set Daily Limit'),
+          content: TextField(
+            controller: _limitController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              hintText: 'Enter your daily limit',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final double? limit = double.tryParse(_limitController.text);
+                if (limit != null) {
+                  onDailyLimitChanged(limit);
+                } else if (_limitController.text.isEmpty) {
+                  onDailyLimitChanged(0.0); // Clear limit
+                }
+                Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
 
   // NEW: Method to handle picking an image from the gallery
   Future<void> _pickImage() async {
@@ -2978,6 +3055,14 @@ class ProfilePage extends StatelessWidget {
         children: [
           _buildCurrencySettingItem(context),
           const Divider(height: 30),
+          SettingsListItem(
+            icon: Icons.track_changes,
+            iconColor: Colors.orange,
+            title: "Daily Limit",
+            onTap: () {
+              _showDailyLimitDialog(context);
+            },
+          ),
           SettingsListItem(
             icon: Icons.account_balance_wallet,
             iconColor: Colors.green,
@@ -4476,6 +4561,17 @@ class PersistenceService {
       'includeFixedDeposits': prefs.getBool('includeFixedDeposits'),
       'includeSavings': prefs.getBool('includeSavings'),
     };
+  }
+
+  // --- Daily Limit ---
+  Future<void> saveDailyLimit(double limit) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('dailyLimit', limit);
+  }
+
+  Future<double?> loadDailyLimit() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble('dailyLimit');
   }
 
   // --- Factory Reset ---
