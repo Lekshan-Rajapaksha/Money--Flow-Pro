@@ -1603,18 +1603,20 @@ class _StatsPageState extends State<StatsPage> {
             const SizedBox(height: 20),
             SizedBox(
               height: 250,
-              child: BarChart(
-                BarChartData(
+              child: LineChart(
+                LineChartData(
                   maxY: chartData.maxY,
-                  alignment: BarChartAlignment.spaceBetween,
-                  barTouchData: BarTouchData(
-                    touchTooltipData: BarTouchTooltipData(
-                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                        final type = rodIndex == 0 ? 'Income' : 'Expense';
-                        return BarTooltipItem(
-                          '$type\n${widget.currencySymbol}${rod.toY.toStringAsFixed(0)}',
-                          const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        );
+                  minY: 0,
+                  lineTouchData: LineTouchData(
+                    touchTooltipData: LineTouchTooltipData(
+                      getTooltipItems: (List<LineBarSpot> touchedSpots) {
+                        return touchedSpots.map((spot) {
+                          final type = spot.barIndex == 0 ? 'Income' : 'Expense';
+                          return LineTooltipItem(
+                            '$type\n${widget.currencySymbol}${spot.y.toStringAsFixed(0)}',
+                            const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          );
+                        }).toList();
                       },
                     ),
                   ),
@@ -1637,9 +1639,10 @@ class _StatsPageState extends State<StatsPage> {
                     bottomTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
+                        interval: 1,
                         getTitlesWidget: (value, meta) {
                           final index = value.toInt();
-                          if (index >= chartData.labels.length) return const Text('');
+                          if (index < 0 || index >= chartData.labels.length) return const Text('');
 
                           String text = chartData.labels[index];
                           // For monthly view, only show labels for every 5 days to avoid clutter
@@ -1660,25 +1663,30 @@ class _StatsPageState extends State<StatsPage> {
                     drawVerticalLine: false,
                     getDrawingHorizontalLine: (value) => const FlLine(color: Colors.black12, strokeWidth: 1),
                   ),
-                  barGroups: List.generate(chartData.labels.length, (index) {
-                    return BarChartGroupData(
-                      x: index,
-                      barRods: [
-                        BarChartRodData(
-                          toY: chartData.incomes[index],
-                          color: Colors.green,
-                          width: 2,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        BarChartRodData(
-                          toY: chartData.expenses[index],
-                          color: Colors.blue,
-                          width: 2,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ],
-                    );
-                  }),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: List.generate(chartData.labels.length, (index) {
+                        return FlSpot(index.toDouble(), chartData.incomes[index]);
+                      }),
+                      isCurved: true,
+                      color: Colors.green,
+                      barWidth: 3,
+                      isStrokeCapRound: true,
+                      dotData: const FlDotData(show: false),
+                      belowBarData: BarAreaData(show: true, color: Colors.green.withAlpha(30)),
+                    ),
+                    LineChartBarData(
+                      spots: List.generate(chartData.labels.length, (index) {
+                        return FlSpot(index.toDouble(), chartData.expenses[index]);
+                      }),
+                      isCurved: true,
+                      color: Colors.blue,
+                      barWidth: 3,
+                      isStrokeCapRound: true,
+                      dotData: const FlDotData(show: false),
+                      belowBarData: BarAreaData(show: true, color: Colors.blue.withAlpha(30)),
+                    ),
+                  ],
                 ),
                 duration: 500.ms,
                 curve: Curves.easeInOut,
