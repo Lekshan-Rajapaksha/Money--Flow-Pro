@@ -154,32 +154,40 @@ class Loan {
   final String id;
   final String personName;
   final double amount;
+  double paidAmount; // NEW
   final String? reason;
   final LoanType type;
   final DateTime date;
-  bool isPaid;
   bool isDeleted; // For recycle bin
   DateTime? deletedDate; // To track when it was deleted
+
+  bool get isPaid => paidAmount >= amount; // MODIFIED: Getter instead of field
 
   Loan({
     required this.personName,
     required this.amount,
+    this.paidAmount = 0.0, // NEW
     this.reason,
     required this.type,
     required this.date,
-    this.isPaid = false,
+    bool isPaid = false, // Backwards compatibility
     this.isDeleted = false,
     this.deletedDate,
     String? id,
-  }) : id = id ?? DateTime.now().toIso8601String() + Random().nextDouble().toString();
+  }) : id = id ?? DateTime.now().toIso8601String() + Random().nextDouble().toString() {
+    if (isPaid && this.paidAmount == 0.0) {
+      this.paidAmount = this.amount;
+    }
+  }
 
   Loan copyWith({
     String? personName,
     double? amount,
+    double? paidAmount,
     String? reason,
     LoanType? type,
     DateTime? date,
-    bool? isPaid,
+    bool? isPaid, // Backwards compatibility for copyWith if used
     bool? isDeleted,
     DateTime? deletedDate,
   }) {
@@ -187,10 +195,10 @@ class Loan {
       id: id,
       personName: personName ?? this.personName,
       amount: amount ?? this.amount,
+      paidAmount: paidAmount ?? (isPaid == true ? (amount ?? this.amount) : this.paidAmount),
       reason: reason ?? this.reason,
       type: type ?? this.type,
       date: date ?? this.date,
-      isPaid: isPaid ?? this.isPaid,
       isDeleted: isDeleted ?? this.isDeleted,
       deletedDate: deletedDate ?? this.deletedDate,
     );
@@ -201,10 +209,11 @@ class Loan {
     'id': id,
     'personName': personName,
     'amount': amount,
+    'paidAmount': paidAmount, // NEW
     'reason': reason,
     'type': type.name,
     'date': date.toIso8601String(),
-    'isPaid': isPaid,
+    'isPaid': isPaid, // Keep for backward compatibility
     'isDeleted': isDeleted,
     'deletedDate': deletedDate?.toIso8601String(),
   };
@@ -213,11 +222,11 @@ class Loan {
     id: json['id'],
     personName: json['personName'],
     amount: json['amount'],
+    paidAmount: (json['paidAmount'] as num?)?.toDouble() ?? (json['isPaid'] == true ? (json['amount'] as num).toDouble() : 0.0), // NEW
     reason: json['reason'],
     type: LoanType.values.byName(json['type']),
     date: DateTime.parse(json['date']),
-    isPaid: json['isPaid'],
-    isDeleted: json['isDeleted'],
+    isDeleted: json['isDeleted'] ?? false,
     deletedDate: json['deletedDate'] != null ? DateTime.parse(json['deletedDate']) : null,
   );
 }
@@ -311,8 +320,10 @@ class _MainPageState extends State<MainPage> {
   List<Loan> _loans = [];
   List<FixedDeposit> _fixedDeposits = [];
   double _savingsPot = 0.0;
-  double _expenseChartMaxY = 2000.0; // NEW: State for expense chart limit
-  double _incomeChartMaxY = 2000.0; // NEW: State for income chart limit
+  double _expenseChartMaxY = 500.0; // NEW: State for expense chart limit (starts at minimum)
+  double _incomeChartMaxY = 500.0; // NEW: State for income chart limit (starts at minimum)
+  bool _isExpenseManual = false; // NEW: Tracks if user manually overrode the limit
+  bool _isIncomeManual = false; // NEW: Tracks if user manually overrode the limit
 
   // Settings
   Currency _selectedCurrency = Currency.USD;
@@ -514,11 +525,29 @@ class _MainPageState extends State<MainPage> {
     _persistenceService.saveLoans(_loans);
   }
 
-  void _toggleLoanStatus(String loanId) {
+  void _toggleLoanStatus(Loan loan) {
+    setState(() {
+      final index = _loans.indexWhere((l) => l.id == loan.id);
+      if (index != -1) {
+        if (_loans[index].isPaid) {
+          _loans[index].paidAmount = 0.0;
+        } else {
+          _loans[index].paidAmount = _loans[index].amount;
+        }
+      }
+    });
+    _persistenceService.saveLoans(_loans);
+  }
+
+  // NEW: Handle partial payments
+  void _addLoanPayment(String loanId, double paymentAmount) {
     setState(() {
       final index = _loans.indexWhere((l) => l.id == loanId);
       if (index != -1) {
-        _loans[index].isPaid = !_loans[index].isPaid;
+        _loans[index].paidAmount += paymentAmount;
+        if (_loans[index].paidAmount > _loans[index].amount) {
+          _loans[index].paidAmount = _loans[index].amount; // Cap at max
+        }
       }
     });
     _persistenceService.saveLoans(_loans);
@@ -589,16 +618,18 @@ class _MainPageState extends State<MainPage> {
   }
 
   // NEW: Method to handle updating the expense chart limit
-  void _updateExpenseChartMaxY(double newValue) {
+  void _updateExpenseChartMaxY(double newValue, bool isManual) {
     setState(() {
       _expenseChartMaxY = newValue;
+      if (isManual) _isExpenseManual = true;
     });
   }
 
   // NEW: Method to handle updating the income chart limit
-  void _updateIncomeChartMaxY(double newValue) {
+  void _updateIncomeChartMaxY(double newValue, bool isManual) {
     setState(() {
       _incomeChartMaxY = newValue;
+      if (isManual) _isIncomeManual = true;
     });
   }
 
@@ -691,6 +722,8 @@ class _MainPageState extends State<MainPage> {
             categories: _categories,
             expenseChartMaxY: _expenseChartMaxY,
             incomeChartMaxY: _incomeChartMaxY,
+            isExpenseManual: _isExpenseManual, // NEW
+            isIncomeManual: _isIncomeManual, // NEW
             onExpenseChartMaxYChanged: _updateExpenseChartMaxY,
             onIncomeChartMaxYChanged: _updateIncomeChartMaxY,
             dailyLimit: _dailyLimit, // NEW
@@ -700,6 +733,7 @@ class _MainPageState extends State<MainPage> {
             loans: _loans,
             onAddLoan: _addLoan,
             onToggleLoanStatus: _toggleLoanStatus,
+            onAddLoanPayment: _addLoanPayment, // NEW
             onDeleteLoan: _deleteLoan,
             onRestoreLoan: _restoreLoan,
             onPermanentlyDeleteLoan: _permanentlyDeleteLoan,
@@ -793,8 +827,10 @@ class HomePage extends StatefulWidget {
   final List<Category> categories;
   final double expenseChartMaxY;
   final double incomeChartMaxY;
-  final Function(double) onExpenseChartMaxYChanged;
-  final Function(double) onIncomeChartMaxYChanged;
+  final bool isExpenseManual; // NEW
+  final bool isIncomeManual; // NEW
+  final Function(double, bool) onExpenseChartMaxYChanged; // MODIFIED
+  final Function(double, bool) onIncomeChartMaxYChanged; // MODIFIED
   final double? dailyLimit; // NEW
 
   const HomePage({
@@ -804,6 +840,8 @@ class HomePage extends StatefulWidget {
     required this.categories,
     required this.expenseChartMaxY,
     required this.incomeChartMaxY,
+    required this.isExpenseManual, // NEW
+    required this.isIncomeManual, // NEW
     required this.onExpenseChartMaxYChanged,
     required this.onIncomeChartMaxYChanged,
     this.dailyLimit,
@@ -841,11 +879,15 @@ class _HomePageState extends State<HomePage> {
   // NEW: Method to auto-scale the chart limit based on data
   void _autoScaleChartMaxY(int weekIndex) {
     if (_weeklyData.isEmpty) return;
+    
+    final isManual = _isShowingExpensesChart ? widget.isExpenseManual : widget.isIncomeManual;
+    if (isManual) return; // Do NOT auto-scale if the user manually set a limit
+
     final weekData = _weeklyData[weekIndex];
     final chartData = _isShowingExpensesChart ? weekData.expenses : weekData.incomes;
     final double maxChartValue = chartData.isNotEmpty ? chartData.reduce(max) : 0;
     
-    double idealMaxY = _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY;
+    double idealMaxY = 500.0; // Start at minimum possible limit
     
     // Only consider the profile's daily limit for expenses
     if (_isShowingExpensesChart && widget.dailyLimit != null && widget.dailyLimit! > idealMaxY) {
@@ -853,7 +895,7 @@ class _HomePageState extends State<HomePage> {
     }
     
     if (maxChartValue > idealMaxY) {
-      idealMaxY = _chartMaxYOptions.firstWhere((option) => option >= maxChartValue, orElse: () => maxChartValue);
+      idealMaxY = maxChartValue;
     }
     
     final currentActiveMaxY = _isShowingExpensesChart ? widget.expenseChartMaxY : widget.incomeChartMaxY;
@@ -863,9 +905,9 @@ class _HomePageState extends State<HomePage> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           if (_isShowingExpensesChart) {
-            widget.onExpenseChartMaxYChanged(targetOption);
+            widget.onExpenseChartMaxYChanged(targetOption, false); // Auto change
           } else {
-            widget.onIncomeChartMaxYChanged(targetOption);
+            widget.onIncomeChartMaxYChanged(targetOption, false); // Auto change
           }
         }
       });
@@ -1255,9 +1297,9 @@ class _HomePageState extends State<HomePage> {
                   onChanged: (newValue) {
                     if (newValue != null) {
                       if (_isShowingExpensesChart) {
-                        widget.onExpenseChartMaxYChanged(newValue);
+                        widget.onExpenseChartMaxYChanged(newValue, true); // Manual change
                       } else {
-                        widget.onIncomeChartMaxYChanged(newValue);
+                        widget.onIncomeChartMaxYChanged(newValue, true); // Manual change
                       }
                     }
                   },
@@ -2398,7 +2440,8 @@ class BudgetPage extends StatefulWidget {
   final String currencySymbol;
   final List<Loan> loans;
   final Function(Loan) onAddLoan;
-  final Function(String) onToggleLoanStatus;
+  final Function(Loan) onToggleLoanStatus;
+  final Function(String, double) onAddLoanPayment;
   final Function(String) onDeleteLoan;
   final Function(String) onRestoreLoan;
   final Function(String) onPermanentlyDeleteLoan;
@@ -2409,6 +2452,7 @@ class BudgetPage extends StatefulWidget {
     required this.loans,
     required this.onAddLoan,
     required this.onToggleLoanStatus,
+    required this.onAddLoanPayment,
     required this.onDeleteLoan,
     required this.onRestoreLoan,
     required this.onPermanentlyDeleteLoan,
@@ -2665,7 +2709,8 @@ class _BudgetPageState extends State<BudgetPage> {
           loan: loan,
           currencySymbol: widget.currencySymbol,
           type: type,
-          onTogglePaid: () => widget.onToggleLoanStatus(loan.id),
+          onTogglePaid: () => widget.onToggleLoanStatus(loan),
+          onAddPayment: (amount) => widget.onAddLoanPayment(loan.id, amount),
           onDelete: () => widget.onDeleteLoan(loan.id),
           onRestore: () => widget.onRestoreLoan(loan.id),
           onPermanentlyDelete: () => widget.onPermanentlyDeleteLoan(loan.id),
@@ -2697,6 +2742,7 @@ class LoanCard extends StatelessWidget {
   final String currencySymbol;
   final LoanListType type;
   final VoidCallback? onTogglePaid;
+  final Function(double)? onAddPayment;
   final VoidCallback? onDelete;
   final VoidCallback? onRestore;
   final VoidCallback? onPermanentlyDelete;
@@ -2707,6 +2753,7 @@ class LoanCard extends StatelessWidget {
     required this.currencySymbol,
     required this.type,
     this.onTogglePaid,
+    this.onAddPayment,
     this.onDelete,
     this.onRestore,
     this.onPermanentlyDelete,
@@ -2716,18 +2763,19 @@ class LoanCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isGiven = loan.type == LoanType.given;
     final color = isGiven ? Colors.green : Colors.redAccent;
+    final progress = loan.amount > 0 ? (loan.paidAmount / loan.amount).clamp(0.0, 1.0) : 0.0;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12.0),
-      padding: const EdgeInsets.all(16.0),
+      margin: const EdgeInsets.only(bottom: 8.0),
+      padding: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(12),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+            color: Colors.black.withAlpha(10),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           )
         ],
       ),
@@ -2739,39 +2787,66 @@ class LoanCard extends StatelessWidget {
               Icon(
                 isGiven ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
                 color: color,
-                size: 20,
+                size: 18,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   loan.personName,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(width: 8),
               Text(
                 '$currencySymbol${loan.amount.toStringAsFixed(2)}',
-                style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.bold),
+                style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.bold),
               ),
             ],
           ),
           if (loan.reason != null && loan.reason!.isNotEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Text(
               loan.reason!,
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
-              maxLines: 2,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
-          const Divider(height: 24),
+          if (type != LoanListType.deleted) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: AlwaysStoppedAnimation<Color>(color.withOpacity(0.7)),
+                      minHeight: 6,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${(progress * 100).toInt()}%',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Paid: $currencySymbol${loan.paidAmount.toStringAsFixed(2)} / $currencySymbol${loan.amount.toStringAsFixed(2)}',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 4),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
                 'Date: ${DateFormat.yMMMd().format(loan.date)}',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
               ),
               _buildActionMenu(context),
             ],
@@ -2787,7 +2862,8 @@ class LoanCard extends StatelessWidget {
       case LoanListType.active:
       case LoanListType.paid:
         items.addAll([
-          PopupMenuItem(value: 'toggle_paid', child: Text(loan.isPaid ? 'Mark as Unpaid' : 'Mark as Paid')),
+          const PopupMenuItem(value: 'add_payment', child: Text('Add Partial Payment')),
+          PopupMenuItem(value: 'toggle_paid', child: Text(loan.isPaid ? 'Mark as Unpaid' : 'Mark as Fully Paid')),
           const PopupMenuDivider(),
           const PopupMenuItem(value: 'delete', child: Text('Move to Bin')),
         ]);
@@ -2808,11 +2884,48 @@ class LoanCard extends StatelessWidget {
       icon: Icon(Icons.more_horiz_rounded, color: Colors.grey.shade600),
       onSelected: (value) {
         if (value == 'toggle_paid') onTogglePaid?.call();
+        if (value == 'add_payment') _showAddPaymentDialog(context);
         if (value == 'delete') onDelete?.call();
         if (value == 'restore') onRestore?.call();
         if (value == 'delete_perm') onPermanentlyDelete?.call();
       },
       itemBuilder: (context) => items,
+    );
+  }
+  
+  void _showAddPaymentDialog(BuildContext context) {
+    final TextEditingController controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Add Payment'),
+          content: TextField(
+            controller: controller,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Amount ($currencySymbol)',
+              hintText: 'e.g. 50',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final double? amount = double.tryParse(controller.text);
+                if (amount != null && amount > 0) {
+                  onAddPayment?.call(amount);
+                  Navigator.pop(context);
+                }
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        );
+      },
     );
   }
 }
