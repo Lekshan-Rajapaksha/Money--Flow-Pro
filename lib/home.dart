@@ -962,28 +962,22 @@ class _HomePageState extends State<HomePage> {
 
   // --- Getters for calculated values ---
 
-  // NEW: Getters specifically for the current week's data for top cards
-  List<Transaction> get _currentWeekTransactions {
+  List<Transaction> get _currentMonthTransactions {
     final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
-    final endOfWeek = startOfWeek.add(const Duration(days: 6));
-
     return widget.transactions.where((t) {
-      final transactionDate = DateTime(t.date.year, t.date.month, t.date.day);
-      return !transactionDate.isBefore(startOfWeek) && !transactionDate.isAfter(endOfWeek);
+      return t.date.year == now.year && t.date.month == now.month;
     }).toList();
   }
 
-  double get _currentWeekIncome => _currentWeekTransactions
+  double get _currentMonthIncome => _currentMonthTransactions
       .where((t) => !t.isExpense)
       .fold(0.0, (sum, item) => sum + item.amount);
 
-  double get _currentWeekExpenses => _currentWeekTransactions
+  double get _currentMonthExpenses => _currentMonthTransactions
       .where((t) => t.isExpense)
       .fold(0.0, (sum, item) => sum + item.amount);
 
-  double get _currentWeekSavings => _currentWeekIncome - _currentWeekExpenses;
+  double get _currentMonthSavings => _currentMonthIncome - _currentMonthExpenses;
 
 
   Category _getCategoryById(String id) {
@@ -1039,12 +1033,12 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // UPDATED LABEL
-            const Text("This Week's Net Savings",
+            const Text("This Month's Net Savings",
                 style: TextStyle(fontSize: 18, color: Colors.white70)),
             const SizedBox(height: 10),
             Text(
               // UPDATED VALUE
-              '${widget.currencySymbol}${_currentWeekSavings.toStringAsFixed(2)}',
+              '${widget.currencySymbol}${_currentMonthSavings.toStringAsFixed(2)}',
               style: const TextStyle(
                   fontSize: 36,
                   fontWeight: FontWeight.bold,
@@ -1077,7 +1071,7 @@ class _HomePageState extends State<HomePage> {
                       const Text('Income', style: TextStyle(color: Colors.grey)),
                       Text(
                         // UPDATED VALUE
-                        '${widget.currencySymbol}${_currentWeekIncome.toStringAsFixed(2)}',
+                        '${widget.currencySymbol}${_currentMonthIncome.toStringAsFixed(2)}',
                         style: const TextStyle(
                             fontSize: 12, fontWeight: FontWeight.bold),
                       ),
@@ -1108,7 +1102,7 @@ class _HomePageState extends State<HomePage> {
                           style: TextStyle(color: Colors.grey)),
                       Text(
                         // UPDATED VALUE
-                        '${widget.currencySymbol}${_currentWeekExpenses.toStringAsFixed(2)}',
+                        '${widget.currencySymbol}${_currentMonthExpenses.toStringAsFixed(2)}',
                         style: const TextStyle(
                             fontSize: 12, fontWeight: FontWeight.bold),
                       ),
