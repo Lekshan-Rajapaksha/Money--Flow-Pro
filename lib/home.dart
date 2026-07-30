@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';// NEW: For picking images from gallery
+import 'package:upgrader/upgrader.dart'; // NEW: For in-app update prompts
 
 // A registry of all IconData that may be stored/loaded from JSON.
 // This const map lets Flutter's tree-shaker know at compile time which
@@ -287,7 +288,14 @@ class MyApp extends StatelessWidget {
               )
           )
       ),
-      home: const MainPage(),
+      home: UpgradeAlert(
+        showIgnore: false, // Don't allow permanent ignore
+        showLater: true, // Allow them to dismiss for the current session
+        upgrader: Upgrader(
+          durationUntilAlertAgain: Duration.zero, // Show every time they open the app if not updated
+        ),
+        child: const MainPage(),
+      ),
     );
   }
 }
