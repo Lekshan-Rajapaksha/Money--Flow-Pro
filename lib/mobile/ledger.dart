@@ -327,16 +327,20 @@ class _CashFlow {
       if (entry.isTransfer) continue;
       final amount = _minor(entry.amount);
       if (entry.isExpense) {
-        spent += amount;
-        expenseByCategory.update(
-          entry.categoryId,
-          (value) => value + amount,
-          ifAbsent: () => amount,
-        );
+        addExpense(entry.categoryId, amount);
       } else {
         income += amount;
       }
     }
+  }
+
+  void addExpense(String category, int amount) {
+    spent += amount;
+    expenseByCategory.update(
+      category,
+      (value) => value + amount,
+      ifAbsent: () => amount,
+    );
   }
 
   int spent = 0;

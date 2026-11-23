@@ -239,30 +239,7 @@ class _Overview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final today = DateUtils.dateOnly(DateTime.now());
-    final balances = state._ledger.balances(today);
-    final total = balances.values.fold(0, (sum, amount) => sum + amount);
-    final current = state._ledger.transactions.where(
-      (entry) =>
-          _inMonth(entry.date, today) &&
-          !DateUtils.dateOnly(entry.date).isAfter(today),
-    );
-    final flow = _CashFlow(current);
-    final recent = state._sortedTransactions.take(4).toList();
-    final upcoming = state._sortedSchedule.take(3).toList();
     final nickname = state._nickname;
-    final previousDailyLimit = state._dailyLimit;
-    final planLimits = {
-      for (final period in _BudgetPeriod.values)
-        period: _totalBudget(state._ledger.budgetLimits(period, today)),
-    };
-    final usesLegacyDailyLimit =
-        planLimits[_BudgetPeriod.daily] == null &&
-        previousDailyLimit != null &&
-        previousDailyLimit.isFinite &&
-        _minor(previousDailyLimit) > 0;
-    if (usesLegacyDailyLimit) {
-      planLimits[_BudgetPeriod.daily] = _minor(previousDailyLimit);
-    }
     return _Page(
       storageKey: 'overview',
       children: [
@@ -275,8 +252,146 @@ class _Overview extends StatelessWidget {
             icon: const Icon(Icons.tune_rounded),
           ),
         ),
+        _OverviewCards(state: state, today: today),
+      ],
+    );
+  }
+}
+
+class _OverviewCards extends StatefulWidget {
+  const _OverviewCards({required this.state, required this.today});
+
+  final _MainPageState state;
+  final DateTime today;
+
+  @override
+  State<_OverviewCards> createState() => _OverviewCardsState();
+}
+
+class _OverviewCardsState extends State<_OverviewCards> {
+  final _controller = PageController(keepPage: false);
+  int _page = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.state;
+    final today = widget.today;
+    final account = state._activeAccount;
+    final balance = state._ledger.balances(today)[account.id] ?? 0;
+    final flow = _CashFlow(
+      state._transactions.where(
+        (entry) =>
+            entry.accountId == account.id &&
+            _inMonth(entry.date, today) &&
+            !DateUtils.dateOnly(entry.date).isAfter(today),
+      ),
+    );
+    var owedToYou = 0;
+    var youOwe = 0;
+    final activeLoans =
+        state._loans.where((loan) => !loan.isDeleted && !loan.isPaid).toList()
+          ..sort((a, b) => b.date.compareTo(a.date));
+    for (final loan in activeLoans) {
+      if (loan.type == LoanType.given) {
+        owedToYou += loan._outstanding;
+      } else {
+        youOwe += loan._outstanding;
+      }
+    }
+    final savings = _minor(state._savingsPot);
+    var deposits = 0;
+    DateTime? nextMaturity;
+    for (final deposit in state._fixedDeposits) {
+      deposits += _minor(deposit.amount);
+      final maturity = DateUtils.dateOnly(deposit.maturityDate);
+      if (!maturity.isBefore(today) &&
+          (nextMaturity == null || maturity.isBefore(nextMaturity))) {
+        nextMaturity = maturity;
+      }
+    }
+
+    final hidden = state._hideOverviewAmounts;
+    String amount(int value) => hidden ? '••••' : state._money(value);
+    const positive = Color(0xFFD9F678);
+    const negative = Color(0xFFFFD7C4);
+    final cards = [
+      _OverviewCard(
+        title: account.name,
+        icon: account.kind.icon,
+        headline: amount(balance),
+        caption: 'Cash flow this month',
+        details: [
+          _FlowValue(
+            'Income',
+            amount(flow.income),
+            Icons.south_west_rounded,
+            positive,
+          ),
+          _FlowValue(
+            'Spending',
+            amount(flow.spent),
+            Icons.north_east_rounded,
+            negative,
+          ),
+        ],
+      ),
+      _OverviewCard(
+        title: 'Loans',
+        icon: Icons.handshake_outlined,
+        headline: '${activeLoans.length}',
+        caption: activeLoans.length == 1 ? 'Active loan' : 'Active loans',
+        destination: _Tools.loans,
+        details: [
+          _FlowValue(
+            'Owed to you',
+            amount(owedToYou),
+            Icons.south_west_rounded,
+            positive,
+          ),
+          _FlowValue(
+            'You owe',
+            amount(youOwe),
+            Icons.north_east_rounded,
+            negative,
+          ),
+        ],
+      ),
+      _OverviewCard(
+        title: 'Savings & deposits',
+        icon: Icons.savings_outlined,
+        headline: amount(savings + deposits),
+        caption:
+            nextMaturity == null
+                ? 'Total savings and deposits'
+                : 'Next maturity ${DateFormat.MMMd().format(nextMaturity)}',
+        destination: _Tools.wallet,
+        details: [
+          _FlowValue(
+            'Savings pot',
+            amount(savings),
+            Icons.savings_outlined,
+            positive,
+          ),
+          _FlowValue(
+            'Fixed deposits',
+            amount(deposits),
+            Icons.account_balance_outlined,
+            positive,
+          ),
+        ],
+      ),
+    ];
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    return Column(
+      children: [
         _TintedCard(
-          padding: const EdgeInsets.all(20),
+          padding: EdgeInsets.zero,
           ringColor: const Color(0x44D9F678),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(25),
@@ -286,200 +401,303 @@ class _Overview extends StatelessWidget {
               end: Alignment.bottomRight,
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(
-                children: [
-                  Icon(
-                    Icons.account_balance_wallet_outlined,
-                    size: 18,
-                    color: Color(0xFFD9F678),
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Tracked balance',
-                      style: TextStyle(
-                        color: Color(0xFFECF7DB),
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                state._money(total),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 41,
-                  height: 1.05,
-                  letterSpacing: -1.2,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 21),
-              const Divider(color: Color(0xFF52826A), height: 1),
-              const SizedBox(height: 14),
-              const Text(
-                'This month',
-                style: TextStyle(color: Color(0xFFECF7DB)),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 24,
-                runSpacing: 10,
-                children: [
-                  _FlowValue(
-                    'Income',
-                    state._money(flow.income),
-                    Icons.south_west_rounded,
-                    const Color(0xFFD9F678),
-                  ),
-                  _FlowValue(
-                    'Spending',
-                    state._money(flow.spent),
-                    Icons.north_east_rounded,
-                    const Color(0xFFFFD7C4),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        if (planLimits.values.any((limit) => limit != null)) ...[
-          _Section('Spending plans'),
-          _Surface(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            child: Column(
-              children: [
-                for (final entry in planLimits.entries)
-                  if (entry.value case final limit?)
-                    _OverviewBudgetTile(
-                      state: state,
-                      period: entry.key,
-                      limit: limit,
-                      today: today,
-                      legacy:
-                          usesLegacyDailyLimit &&
-                          entry.key == _BudgetPeriod.daily,
-                    ),
-              ],
+          child: SizedBox(
+            height:
+                240 +
+                (MediaQuery.textScalerOf(context).scale(17) - 17).clamp(0, 80) *
+                    6,
+            child: PageView.builder(
+              key: const PageStorageKey('overview-cards'),
+              controller: _controller,
+              itemCount: cards.length,
+              onPageChanged: (page) => setState(() => _page = page),
+              itemBuilder: (context, index) {
+                final content = _buildCard(state, cards[index], hidden);
+                if (reduceMotion) return content;
+                return AnimatedBuilder(
+                  animation: _controller,
+                  child: content,
+                  builder: (context, child) {
+                    final page =
+                        _controller.hasClients ? _controller.page ?? 0 : 0;
+                    final distance = (page - index).abs().clamp(0.0, 1.0);
+                    return Opacity(opacity: 1 - 0.45 * distance, child: child);
+                  },
+                );
+              },
             ),
           ),
-        ],
-        _Section(
-          'Accounts',
-          action: TextButton.icon(
-            onPressed: () => state._editAccount(),
-            icon: const Icon(Icons.add),
-            label: const Text('Add'),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (final (index, label)
+                in ['Balance', 'Loans', 'Savings'].indexed)
+              Flexible(
+                child: TextButton(
+                  onPressed: () {
+                    if (reduceMotion) {
+                      _controller.jumpToPage(index);
+                    } else {
+                      _controller.animateToPage(
+                        index,
+                        duration: const Duration(milliseconds: 260),
+                        curve: Curves.easeOutCubic,
+                      );
+                    }
+                  },
+                  style: TextButton.styleFrom(
+                    backgroundColor:
+                        index == _page
+                            ? context.colors.secondaryContainer
+                            : null,
+                    foregroundColor:
+                        index == _page
+                            ? context.colors.onSecondaryContainer
+                            : null,
+                  ),
+                  child: Text(label),
+                ),
+              ),
+          ],
+        ),
+        AnimatedSwitcher(
+          duration:
+              reduceMotion ? Duration.zero : const Duration(milliseconds: 220),
+          layoutBuilder:
+              (current, previous) => Stack(
+                alignment: Alignment.topCenter,
+                children: [
+                  for (final child in previous)
+                    IgnorePointer(child: ExcludeSemantics(child: child)),
+                  if (current != null) current,
+                ],
+              ),
+          child: Column(
+            key: ValueKey(_page),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: switch (_page) {
+              1 => _loanPreview(state, activeLoans, amount),
+              2 => _savingsPreview(state, today, amount),
+              _ => _recentActivity(state, hidden),
+            },
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildCard(_MainPageState state, _OverviewCard card, bool hidden) =>
+      Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(card.icon, size: 18, color: const Color(0xFFD9F678)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    card.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFECF7DB),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (card.destination case final destination?)
+                  IconButton(
+                    tooltip: 'Open ${card.title.toLowerCase()}',
+                    color: const Color(0xFFECF7DB),
+                    onPressed: () => state._openTools(destination),
+                    icon: const Icon(Icons.arrow_outward_rounded),
+                  ),
+                IconButton(
+                  tooltip:
+                      hidden
+                          ? 'Show overview amounts'
+                          : 'Hide overview amounts',
+                  color: const Color(0xFFECF7DB),
+                  onPressed: state._toggleOverviewPrivacy,
+                  icon: Icon(
+                    hidden
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                ),
+              ],
+            ),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                card.headline,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 38,
+                  fontWeight: FontWeight.w800,
+                  height: 1.1,
+                ),
+              ),
+            ),
+            const Spacer(),
+            const Divider(color: Color(0xFF52826A)),
+            Text(
+              card.caption,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFFECF7DB)),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(child: card.details.first),
+                const SizedBox(width: 12),
+                Expanded(child: card.details.last),
+              ],
+            ),
+          ],
+        ),
+      );
+
+  List<Widget> _recentActivity(_MainPageState state, bool private) {
+    final recent = state._sortedTransactions
+        .where((entry) => entry.involvesAccount(state._activeAccount.id))
+        .take(4);
+    return [
+      _Section(
+        'Recent activity',
+        action: TextButton(
+          onPressed: () => state._openActivity(),
+          child: const Text('View all'),
+        ),
+      ),
+      if (recent.isEmpty)
+        const _Empty(
+          Icons.receipt_long_outlined,
+          'No activity yet',
+          'Add an income or expense to start tracking.',
+        )
+      else
         _Surface(
           padding: EdgeInsets.zero,
           child: Column(
             children: [
-              for (final account in state._ledger.accounts)
-                ListTile(
-                  leading: _IconChip(account.kind.icon),
-                  title: Text(
-                    account.name,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text(account.kind.label),
-                  trailing: Text(
-                    state._money(balances[account.id]!),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  onTap: () => state._editAccount(account),
-                ),
+              for (final entry in recent)
+                _EntryTile(state: state, entry: entry, hideAmount: private),
             ],
           ),
         ),
-        if (upcoming.isNotEmpty) ...[
-          _Section(
-            'Upcoming',
-            action: TextButton(
-              onPressed: () => state._openPlan(_PlanSection.schedule),
-              child: const Text('View schedule'),
-            ),
-          ),
-          _Surface(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                for (final entry in upcoming)
-                  _ScheduleTile(state: state, entry: entry),
-              ],
-            ),
-          ),
-        ],
-        _Section(
-          'Recent activity',
-          action: TextButton(
-            onPressed: () => state._navigate(_Destination.activity),
-            child: const Text('View all'),
-          ),
+    ];
+  }
+
+  List<Widget> _loanPreview(
+    _MainPageState state,
+    List<Loan> loans,
+    String Function(int) amount,
+  ) => [
+    _Section(
+      'Loan summary',
+      action: TextButton(
+        onPressed: () => state._openTools(_Tools.loans),
+        child: const Text('View loans'),
+      ),
+    ),
+    if (loans.isEmpty)
+      const _Empty(
+        Icons.handshake_outlined,
+        'No active loans',
+        'Outstanding loans will appear here.',
+      )
+    else
+      _Surface(
+        padding: EdgeInsets.zero,
+        child: Column(
+          children: [
+            for (final loan in loans.take(3))
+              ListTile(
+                leading: const _IconChip(Icons.handshake_outlined),
+                title: Text(loan.personName),
+                subtitle: Text(
+                  loan.type == LoanType.given ? 'Loan given' : 'Loan taken',
+                ),
+                trailing: Text(amount(loan._outstanding)),
+              ),
+          ],
         ),
-        if (recent.isEmpty)
-          const _Empty(
-            Icons.receipt_long_outlined,
-            'No activity yet',
-            'Add an income or expense to start tracking.',
-          )
-        else
-          _Surface(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                for (final entry in recent)
-                  _EntryTile(state: state, entry: entry),
-              ],
+      ),
+  ];
+
+  List<Widget> _savingsPreview(
+    _MainPageState state,
+    DateTime today,
+    String Function(int) amount,
+  ) {
+    final upcoming =
+        state._fixedDeposits
+            .where(
+              (deposit) =>
+                  !DateUtils.dateOnly(deposit.maturityDate).isBefore(today),
+            )
+            .toList()
+          ..sort((a, b) => a.maturityDate.compareTo(b.maturityDate));
+    return [
+      _Section(
+        'Savings summary',
+        action: TextButton(
+          onPressed: () => state._openTools(_Tools.wallet),
+          child: const Text('View savings'),
+        ),
+      ),
+      _Surface(
+        padding: EdgeInsets.zero,
+        child: Column(
+          children: [
+            ListTile(
+              leading: const _IconChip(Icons.savings_outlined),
+              title: const Text('Savings pot balance'),
+              trailing: Text(amount(_minor(state._savingsPot))),
             ),
-          ),
-      ],
-    );
+            for (final deposit in upcoming.take(2))
+              ListTile(
+                leading: const _IconChip(Icons.account_balance_outlined),
+                title: const Text('Fixed deposit'),
+                subtitle: Text(
+                  'Matures ${DateFormat.yMMMd().format(deposit.maturityDate)}',
+                ),
+                trailing: Text(amount(_minor(deposit.amount))),
+              ),
+            if (upcoming.isEmpty)
+              const ListTile(
+                leading: _IconChip(Icons.event_outlined),
+                title: Text('No upcoming maturities'),
+              ),
+          ],
+        ),
+      ),
+    ];
   }
 }
 
-class _OverviewBudgetTile extends StatelessWidget {
-  const _OverviewBudgetTile({
-    required this.state,
-    required this.period,
-    required this.limit,
-    required this.today,
-    required this.legacy,
+class _OverviewCard {
+  const _OverviewCard({
+    required this.title,
+    required this.icon,
+    required this.headline,
+    required this.caption,
+    required this.details,
+    this.destination,
   });
 
-  final _MainPageState state;
-  final _BudgetPeriod period;
-  final int limit;
-  final DateTime today;
-  final bool legacy;
-
-  @override
-  Widget build(BuildContext context) {
-    final spent = state._ledger.budgetSpending(period, today, today).spent;
-    final left = limit - spent;
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: const _IconChip(Icons.track_changes_rounded),
-      title: Text(
-        legacy ? 'Daily spending limit' : '${period.label} plan',
-        style: const TextStyle(fontWeight: FontWeight.w800),
-      ),
-      subtitle: Text(
-        '${state._money(left.abs())} ${left < 0 ? 'over' : 'left'}',
-      ),
-      trailing: const Icon(Icons.chevron_right_rounded),
-      onTap:
-          legacy
-              ? () => state._openTools(_Tools.settings)
-              : () => state._openBudgets(period),
-    );
-  }
+  final String title;
+  final IconData icon;
+  final String headline;
+  final String caption;
+  final List<_FlowValue> details;
+  final _Tools? destination;
 }
 
 class _FlowValue extends StatelessWidget {
@@ -496,19 +714,30 @@ class _FlowValue extends StatelessWidget {
     children: [
       Icon(icon, color: color, size: 18),
       const SizedBox(width: 7),
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: TextStyle(color: color, fontSize: 12)),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
-              fontSize: 17,
+      Flexible(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 12),
             ),
-          ),
-        ],
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                value,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 17,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     ],
   );
@@ -519,11 +748,13 @@ class _EntryTile extends StatelessWidget {
     required this.state,
     required this.entry,
     this.showDate = true,
+    this.hideAmount = false,
   });
 
   final _MainPageState state;
   final Transaction entry;
   final bool showDate;
+  final bool hideAmount;
 
   @override
   Widget build(BuildContext context) {
@@ -535,6 +766,11 @@ class _EntryTile extends StatelessWidget {
         transfer
             ? '$account → ${state._accountName(entry.destinationId!)}'
             : account;
+    final details = [
+      description,
+      if (showDate) DateFormat.MMMd().format(entry.date),
+      if (entry.coverageDays > 1) '${entry.coverageDays} plan days',
+    ];
     final color =
         transfer
             ? context.colors.primary
@@ -562,18 +798,18 @@ class _EntryTile extends StatelessWidget {
         style: const TextStyle(fontWeight: FontWeight.w700),
       ),
       subtitle: Text(
-        showDate
-            ? '$description · ${DateFormat.MMMd().format(entry.date)}'
-            : description,
+        details.join(' · '),
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
       trailing: Text(
-        '${transfer
-            ? ''
-            : entry.isExpense
-            ? '−'
-            : '+'}${state._money(_minor(entry.amount))}',
+        hideAmount
+            ? '••••'
+            : '${transfer
+                ? ''
+                : entry.isExpense
+                ? '−'
+                : '+'}${state._money(_minor(entry.amount))}',
         style: TextStyle(color: color, fontWeight: FontWeight.w800),
       ),
       onTap: () => state._openEntry(entry),
@@ -589,20 +825,29 @@ class _Activity extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final query = state._query.trim().toLowerCase();
+    final today = DateUtils.dateOnly(DateTime.now());
     final entries = state._sortedTransactions.where((entry) {
       if (state._kindFilter case final type? when entry._kind != type) {
         return false;
       }
-      if (state._accountFilter case final id?
-          when entry.accountId != id && entry.destinationId != id) {
-        return false;
-      }
+      final account = state._accountFilter ?? state._activeAccount.id;
+      if (account.isNotEmpty && !entry.involvesAccount(account)) return false;
       if (state._categoryFilter case final id? when entry.categoryId != id) {
         return false;
       }
       if (state._activityRange case final range?) {
         final date = DateUtils.dateOnly(entry.date);
-        if (date.isBefore(range.start) || date.isAfter(range.end)) return false;
+        final usePlanDates =
+            state._usePlanDates && entry._kind == _EntryKind.expense;
+        final firstDay = usePlanDates ? entry._planStart : date;
+        final lastDay =
+            usePlanDates
+                ? _shiftBudgetDay(firstDay, entry.coverageDays - 1)
+                : date;
+        if (lastDay.isBefore(range.start) || firstDay.isAfter(range.end)) {
+          return false;
+        }
+        if (state._usePlanDates && date.isAfter(today)) return false;
       }
       return [
         entry.description,
@@ -623,6 +868,12 @@ class _Activity extends StatelessWidget {
       children: [
         _Heading(
           'Activity',
+          subtitle:
+              state._accountFilter == ''
+                  ? 'All accounts'
+                  : state._accountName(
+                    state._accountFilter ?? state._activeAccount.id,
+                  ),
           trailing: IconButton.filledTonal(
             tooltip: 'Export transactions',
             onPressed: state._exportCsv,
@@ -699,69 +950,131 @@ class _Insights extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final month = state._reportMonth;
-    final entries = state._ledger.transactions.where(
-      (entry) => _inMonth(entry.date, month),
+    final today = DateUtils.dateOnly(DateTime.now());
+    final period = state._reportPeriod;
+    final date = state._reportDate;
+    final window = period.range(date);
+    final current = period.start(date) == period.start(today);
+    final end = current ? today : window.end;
+    final account = state._activeAccount;
+    final data = state._transactions.where(
+      (entry) => state._reportAllAccounts || entry.involvesAccount(account.id),
     );
+    Iterable<Transaction> within(DateTimeRange range) => data.where((entry) {
+      final day = DateUtils.dateOnly(entry.date);
+      return !day.isBefore(range.start) &&
+          !day.isAfter(range.end) &&
+          !day.isAfter(today);
+    });
+    final entries = within(window);
     final flow = _CashFlow(entries);
     final categories =
         flow.expenseByCategory.entries.toList()
           ..sort((a, b) => b.value.compareTo(a.value));
-    final months = List.generate(
-      6,
-      (index) => DateTime(month.year, month.month - 5 + index),
-    );
-    final trends =
-        months
-            .map(
-              (date) => _CashFlow(
-                state._ledger.transactions.where(
-                  (entry) => _inMonth(entry.date, date),
-                ),
-              ),
-            )
-            .toList();
+    final dates = List.generate(6, (index) => period.move(date, index - 5));
+    final trends = [
+      for (final day in dates) _CashFlow(within(period.range(day))),
+    ];
+    final previous = period.range(period.move(date, -1));
+    final previousDays = _budgetDays(
+      previous,
+    ).take(_budgetDays(DateTimeRange(start: window.start, end: end)).length);
+    final previousSpent =
+        _CashFlow(
+          within(DateTimeRange(start: previous.start, end: previousDays.last)),
+        ).spent;
+    final delta = flow.spent - previousSpent;
+    final comparison = switch (delta) {
+      0 => 'Same spending',
+      > 0 => '${state._money(delta)} more spent',
+      _ => '${state._money(-delta)} less spent',
+    };
+    final trendDate = switch (period) {
+      _BudgetPeriod.daily => DateFormat.E(),
+      _BudgetPeriod.weekly => DateFormat.Md(),
+      _BudgetPeriod.monthly => DateFormat.MMM(),
+    };
     final peak = trends.fold(
       1,
       (top, point) => max(top, max(point.income, point.spent)),
     );
     return _Page(
       storageKey: 'insights',
-      children: [
-        _Heading(
-          'Insights',
-          trailing: TextButton(
-            onPressed: () => state._openTools(_Tools.reports),
-            child: const Text('Detailed reports'),
+      pinnedHeader: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _Heading(
+            'Insights',
+            subtitle: state._reportAllAccounts ? null : account.name,
+            trailing: TextButton(
+              onPressed: () => state._openTools(_Tools.reports),
+              child: const Text('Detailed reports'),
+            ),
           ),
-        ),
-        _Surface(
-          padding: const EdgeInsets.all(6),
-          child: Row(
-            children: [
-              IconButton(
-                tooltip: 'Previous month',
-                onPressed: () => state._moveReport(-1),
-                icon: const Icon(Icons.chevron_left),
-              ),
-              Expanded(
-                child: Text(
-                  DateFormat.yMMMM().format(month),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Next month',
-                onPressed:
-                    _inMonth(month, DateTime.now())
-                        ? null
-                        : () => state._moveReport(1),
-                icon: const Icon(Icons.chevron_right),
-              ),
+          SegmentedButton<_BudgetPeriod>(
+            showSelectedIcon: false,
+            segments: [
+              for (final option in _BudgetPeriod.values)
+                ButtonSegment(value: option, label: Text(option.tab)),
             ],
+            selected: {period},
+            onSelectionChanged:
+                (selection) => state._selectReportPeriod(selection.single),
           ),
-        ),
+          const SizedBox(height: 10),
+          _Surface(
+            padding: const EdgeInsets.all(6),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Previous ${period.unit}',
+                  onPressed: () => state._moveReport(-1),
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                Expanded(
+                  child: TextButton(
+                    onPressed: state._chooseReportDate,
+                    child: Text(
+                      period.dateLabel(date),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Next ${period.unit}',
+                  onPressed: current ? null : () => state._moveReport(1),
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
+            ),
+          ),
+          if (!current || state._ledger.accounts.length > 1)
+            Wrap(
+              spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (state._ledger.accounts.length > 1)
+                  FilterChip(
+                    label: const Text('All accounts'),
+                    selected: state._reportAllAccounts,
+                    onSelected: state._setReportAllAccounts,
+                  ),
+                if (!current)
+                  TextButton(
+                    onPressed: () => state._moveReport(0),
+                    child: Text(
+                      period == _BudgetPeriod.daily
+                          ? 'Back to today'
+                          : 'Back to this ${period.unit}',
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
+      children: [
+        const SizedBox(height: 8),
         _Section('Cash flow'),
         _Surface(
           child: Column(
@@ -781,7 +1094,20 @@ class _Insights extends StatelessWidget {
             ],
           ),
         ),
-        _Section('Six-month trend'),
+        if (flow.spent > 0 || previousSpent > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: _Surface(
+              child: _Metric(
+                current && period != _BudgetPeriod.daily
+                    ? 'Same days last ${period.unit}'
+                    : 'Previous ${period.unit}',
+                comparison,
+                delta > 0 ? context.colors.error : context.positive,
+              ),
+            ),
+          ),
+        _Section('Last 6 ${period.unit}s'),
         _Surface(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -809,11 +1135,11 @@ class _Insights extends StatelessWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  for (var index = 0; index < months.length; index++)
+                  for (var index = 0; index < dates.length; index++)
                     Expanded(
                       child: Semantics(
                         label:
-                            '${DateFormat.yMMMM().format(months[index])}, income ${state._money(trends[index].income)}, spending ${state._money(trends[index].spent)}',
+                            '${period.dateLabel(dates[index])}, income ${state._money(trends[index].income)}, spending ${state._money(trends[index].spent)}',
                         child: Column(
                           children: [
                             SizedBox(
@@ -836,7 +1162,7 @@ class _Insights extends StatelessWidget {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              DateFormat.MMM().format(months[index]),
+                              trendDate.format(dates[index]),
                               style: TextStyle(
                                 fontSize: 11,
                                 color: context.colors.onSurfaceVariant,
@@ -851,26 +1177,74 @@ class _Insights extends StatelessWidget {
             ],
           ),
         ),
+        if (flow.spent > 0 && period != _BudgetPeriod.daily) ...[
+          _Section('Daily spending'),
+          _Surface(
+            child: _DailySpendingChart(
+              state: state,
+              range: DateTimeRange(start: window.start, end: end),
+              entries: entries,
+            ),
+          ),
+        ],
         _Section('Spending by category'),
         if (categories.isEmpty)
-          const _Empty(
+          _Empty(
             Icons.donut_large_rounded,
-            'No spending this month',
+            'No spending this ${period.unit}',
             'Your category totals will appear here.',
           )
         else
           _Surface(
             child: Column(
               children: [
+                SizedBox(
+                  height: 176,
+                  child: PieChart(
+                    PieChartData(
+                      centerSpaceRadius: 44,
+                      sectionsSpace: 2,
+                      sections: [
+                        for (final category in categories)
+                          PieChartSectionData(
+                            value: category.value.toDouble(),
+                            color:
+                                state._category(category.key)?.color ??
+                                context.colors.primary,
+                            radius: 26,
+                            showTitle: false,
+                          ),
+                      ],
+                    ),
+                    duration:
+                        MediaQuery.disableAnimationsOf(context)
+                            ? Duration.zero
+                            : const Duration(milliseconds: 250),
+                  ),
+                ),
+
                 for (final category in categories)
                   InkWell(
                     onTap:
-                        () => state._showCategoryActivity(category.key, month),
+                        () => state._openActivity(
+                          category: category.key,
+                          kind: _EntryKind.expense,
+                          range: DateTimeRange(start: window.start, end: end),
+                          account: state._reportAllAccounts ? '' : account.id,
+                        ),
                     borderRadius: BorderRadius.circular(8),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 9),
                       child: Row(
                         children: [
+                          Icon(
+                            Icons.circle,
+                            size: 10,
+                            color:
+                                state._category(category.key)?.color ??
+                                context.colors.primary,
+                          ),
+                          const SizedBox(width: 8),
                           Expanded(
                             child: _Meter(
                               label:
@@ -898,12 +1272,114 @@ class _Insights extends StatelessWidget {
   }
 }
 
+class _DailySpendingChart extends StatelessWidget {
+  const _DailySpendingChart({
+    required this.state,
+    required this.range,
+    required this.entries,
+  });
+
+  final _MainPageState state;
+  final DateTimeRange range;
+  final Iterable<Transaction> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final dates = _budgetDays(range).toList();
+    final days = dates.length;
+    final totals = <DateTime, int>{};
+    for (final entry in entries) {
+      if (entry._kind == _EntryKind.expense) {
+        final day = DateUtils.dateOnly(entry.date);
+        totals.update(
+          day,
+          (value) => value + _minor(entry.amount),
+          ifAbsent: () => _minor(entry.amount),
+        );
+      }
+    }
+    final values = [for (final date in dates) totals[date] ?? 0];
+    final accent = context.colors.primary;
+    return Column(
+      children: [
+        SizedBox(
+          height: 132,
+          child: LineChart(
+            LineChartData(
+              minX: 1,
+              maxX: max(2, days).toDouble(),
+              minY: 0,
+              maxY: max(1, values.reduce(max) * 1.12).toDouble(),
+              borderData: FlBorderData(show: false),
+              titlesData: const FlTitlesData(show: false),
+              gridData: const FlGridData(drawVerticalLine: false),
+              lineTouchData: LineTouchData(
+                touchTooltipData: LineTouchTooltipData(
+                  fitInsideHorizontally: true,
+                  fitInsideVertically: true,
+                  getTooltipItems:
+                      (spots) => [
+                        for (final spot in spots)
+                          LineTooltipItem(
+                            '${DateFormat.MMMd().format(dates[(spot.x.toInt() - 1).clamp(0, dates.length - 1)])}\n${state._money(spot.y.toInt())}',
+                            TextStyle(color: context.colors.onInverseSurface),
+                          ),
+                      ],
+                  getTooltipColor: (_) => context.colors.inverseSurface,
+                ),
+              ),
+              lineBarsData: [
+                LineChartBarData(
+                  color: accent,
+                  barWidth: 3,
+                  dotData: FlDotData(show: days == 1),
+                  spots: [
+                    for (final (index, value) in values.indexed)
+                      FlSpot(index + 1.0, value.toDouble()),
+                  ],
+                  belowBarData: BarAreaData(
+                    show: true,
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        accent.withValues(alpha: 0.28),
+                        accent.withValues(alpha: 0.02),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            duration:
+                MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : const Duration(milliseconds: 250),
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(DateFormat.MMMd().format(dates.first)),
+            if (days > 1) Text(DateFormat.MMMd().format(dates.last)),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class _Bar extends StatelessWidget {
   const _Bar(this.ratio, this.color);
   final double ratio;
   final Color color;
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => AnimatedContainer(
+    duration:
+        MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 250),
+    curve: Curves.easeOutCubic,
     width: 8,
     height: max(2, 88 * ratio),
     decoration: BoxDecoration(

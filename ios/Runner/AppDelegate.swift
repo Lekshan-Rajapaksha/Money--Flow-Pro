@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import UserNotifications
 import UniformTypeIdentifiers
 
 @main
@@ -10,6 +11,7 @@ import UniformTypeIdentifiers
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -20,6 +22,10 @@ import UniformTypeIdentifiers
       binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
     channel.setMethodCallHandler { [weak self] call, result in
+      if call.method == "timeZone" {
+        result(TimeZone.current.identifier)
+        return
+      }
       guard call.method == "shareCsv" || call.method == "pickCsv" else {
         result(FlutterMethodNotImplemented)
         return

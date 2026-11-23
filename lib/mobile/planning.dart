@@ -4,7 +4,7 @@ enum _Destination { overview, activity, plan, insights, tools }
 
 enum _PlanSection { budgets, goals, schedule }
 
-enum _Tools { menu, wallet, loans, settings, reports }
+enum _Tools { menu, wallet, loans, settings, accounts, reports }
 
 class _Planning extends StatelessWidget {
   const _Planning({required this.state});
@@ -163,6 +163,63 @@ class _ScheduleTile extends StatelessWidget {
         style: const TextStyle(fontWeight: FontWeight.w800),
       ),
       onTap: () => state._scheduleActions(entry, due),
+    );
+  }
+}
+
+class _AccountsSettings extends StatelessWidget {
+  const _AccountsSettings({required this.state});
+
+  final _MainPageState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final balances = state._ledger.balances(DateUtils.dateOnly(DateTime.now()));
+    return _Page(
+      storageKey: 'accounts-settings',
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => state._openTools(_Tools.settings),
+            icon: const Icon(Icons.arrow_back_rounded),
+            label: const Text('Settings'),
+          ),
+        ),
+        _Heading(
+          'Accounts',
+          subtitle: 'Choose which account opens in Overview and Activity.',
+          trailing: IconButton.filledTonal(
+            onPressed: () => state._editAccount(),
+            tooltip: 'Add account',
+            icon: const Icon(Icons.add_rounded),
+          ),
+        ),
+        _Surface(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final account in state._ledger.accounts)
+                ListTile(
+                  leading: _IconChip(account.kind.icon),
+                  title: Text(account.name),
+                  subtitle: Text(
+                    account.id == state._activeAccount.id
+                        ? 'Active · ${state._money(balances[account.id] ?? 0)}'
+                        : state._money(balances[account.id] ?? 0),
+                  ),
+                  selected: account.id == state._activeAccount.id,
+                  onTap: () => state._switchAccount(account.id),
+                  trailing: IconButton(
+                    tooltip: 'Edit ${account.name}',
+                    onPressed: () => state._editAccount(account),
+                    icon: const Icon(Icons.edit_outlined),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

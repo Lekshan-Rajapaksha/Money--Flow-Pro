@@ -17,6 +17,10 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.lekshan.moneyflow/export")
             .setMethodCallHandler { call, result ->
+                if (call.method == "timeZone") {
+                    result.success(java.util.TimeZone.getDefault().id)
+                    return@setMethodCallHandler
+                }
                 if (call.method == "pickCsv") {
                     pickCsv(result)
                     return@setMethodCallHandler

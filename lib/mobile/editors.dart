@@ -88,6 +88,7 @@ class _AmountField extends StatelessWidget {
     this.controller,
     this.allowZero = false,
     this.allowNegative = false,
+    this.validateAmount,
   });
 
   final String label;
@@ -97,6 +98,7 @@ class _AmountField extends StatelessWidget {
   final TextEditingController? controller;
   final bool allowZero;
   final bool allowNegative;
+  final String? Function(int)? validateAmount;
 
   @override
   Widget build(BuildContext context) => TextFormField(
@@ -115,7 +117,7 @@ class _AmountField extends StatelessWidget {
           (!allowNegative && cents < 0)) {
         return 'Enter a valid amount with up to two decimal places';
       }
-      return null;
+      return validateAmount?.call(cents);
     },
   );
 }
@@ -168,8 +170,7 @@ class _EntryEditor extends StatefulWidget {
 class _EntryEditorState extends State<_EntryEditor> {
   late final Transaction? _entry = widget.schedule?.template ?? widget.entry;
   late _EntryKind _kind = _entry?._kind ?? _EntryKind.expense;
-  late String _account =
-      _entry?.accountId ?? widget.state._ledger.accounts.first.id;
+  late String _account = _entry?.accountId ?? widget.state._activeAccount.id;
   late String? _destination = _entry?.destinationId;
   late String? _category = _entry?.categoryId ?? widget.initialCategory;
   late DateTime _date = DateUtils.dateOnly(
@@ -178,6 +179,8 @@ class _EntryEditorState extends State<_EntryEditor> {
         widget.initialDate ??
         DateTime.now(),
   );
+  late int _coverageDays = _entry?.coverageDays ?? 1;
+  late DateTime? _coverageStart = _entry?.coverageStart;
   late _Frequency _frequency = widget.schedule?.frequency ?? _Frequency.monthly;
   late final _amount = TextEditingController(
     text: _entry == null ? '' : _moneyText(_minor(_entry.amount)),
@@ -212,6 +215,11 @@ class _EntryEditorState extends State<_EntryEditor> {
       categoryId: _kind == _EntryKind.transfer ? '' : category!,
       date: keepAnchor ? originalSchedule.template.date : date,
       accountId: _account,
+      coverageDays: _kind == _EntryKind.expense ? _coverageDays : 1,
+      coverageStart:
+          _kind == _EntryKind.expense && _coverageDays > 1
+              ? _coverageStart
+              : null,
       destinationId: _kind == _EntryKind.transfer ? destination : null,
     );
     if (widget.scheduling) {
@@ -257,6 +265,7 @@ class _EntryEditorState extends State<_EntryEditor> {
                 : 'Edit schedule')
             : (widget.entry == null ? 'Add transaction' : 'Edit transaction');
     final canRemove = widget.entry != null || widget.schedule != null;
+    final planStart = _coverageStart ?? _date;
     return _Editor(
       title: title,
       fields: [
@@ -318,12 +327,46 @@ class _EntryEditorState extends State<_EntryEditor> {
           ),
           textCapitalization: TextCapitalization.sentences,
         ),
+        if (!widget.scheduling && _kind == _EntryKind.expense)
+          _select(
+            value: _coverageDays,
+            label: 'Plan coverage',
+            items: [
+              (1, 'Purchase day only'),
+              for (var days = 2; days <= 31; days++) (days, '$days days'),
+            ],
+            onChanged: (days) => setState(() => _coverageDays = days!),
+          ),
         if (widget.scheduling)
           _select(
             value: _frequency,
             label: 'Repeat',
             items: _Frequency.values.map((item) => (item, item.label)),
             onChanged: (value) => setState(() => _frequency = value!),
+          ),
+        if (_kind == _EntryKind.expense && _coverageDays > 1)
+          OutlinedButton.icon(
+            icon: const Icon(Icons.date_range_outlined),
+            label: Text(
+              'Plan dates: ${DateFormat.MMMd().format(planStart)} – '
+              '${DateFormat.MMMd().format(_shiftBudgetDay(planStart, _coverageDays - 1))}',
+            ),
+            onPressed: () async {
+              final now = DateTime.now();
+              final firstDate = DateTime(1900);
+              final lastDate = DateTime(now.year + 1, 12, 31);
+              final start = await showDatePicker(
+                context: context,
+                helpText: 'First day covered by this purchase',
+                initialDate: planStart,
+                firstDate:
+                    planStart.isBefore(firstDate) ? planStart : firstDate,
+                lastDate: planStart.isAfter(lastDate) ? planStart : lastDate,
+              );
+              if (start != null && mounted) {
+                setState(() => _coverageStart = start);
+              }
+            },
           ),
         OutlinedButton.icon(
           icon: const Icon(Icons.calendar_today_outlined),

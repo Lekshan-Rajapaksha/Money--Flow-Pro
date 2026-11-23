@@ -59,10 +59,24 @@ extension _BudgetLedger on _Ledger {
           ? budgets
           : periodBudgets[period.key(date, repeats)] ?? const {};
 
-  Map<String, int> budgetLimits(_BudgetPeriod period, DateTime date) => {
-    ..._budgetBucket(period, date, true),
-    ..._budgetBucket(period, date, false),
-  };
+  Map<String, int> budgetLimits(_BudgetPeriod period, DateTime date) {
+    final limits = {
+      ..._budgetBucket(period, date, true),
+      ..._budgetBucket(period, date, false),
+    };
+    if (period == _BudgetPeriod.daily) return limits;
+    final dailyTotals = <String, int>{};
+    for (final day in _budgetDays(period.range(date))) {
+      for (final limit in budgetLimits(_BudgetPeriod.daily, day).entries) {
+        dailyTotals.update(
+          limit.key,
+          (total) => total + limit.value,
+          ifAbsent: () => limit.value,
+        );
+      }
+    }
+    return {...dailyTotals, ...limits};
+  }
 
   _Ledger updateBudget(
     _BudgetPeriod period,
@@ -90,22 +104,48 @@ extension _BudgetLedger on _Ledger {
     return copyWith(periodBudgets: buckets);
   }
 
-  _CashFlow budgetSpending(
-    _BudgetPeriod period,
-    DateTime date,
+  Map<DateTime, _CashFlow> budgetSpendingByDay(
+    DateTimeRange range,
     DateTime today,
   ) {
-    final range = period.range(date);
-    return _CashFlow(
-      transactions.where((entry) {
-        final day = DateUtils.dateOnly(entry.date);
-        return !day.isBefore(range.start) &&
-            !day.isAfter(range.end) &&
-            !day.isAfter(today);
-      }),
-    );
+    final days = {for (final day in _budgetDays(range)) day: _CashFlow([])};
+    for (final entry in transactions) {
+      if (entry._kind != _EntryKind.expense) continue;
+      final purchase = DateUtils.dateOnly(entry.date);
+      if (purchase.isAfter(today)) continue;
+      final start = entry._planStart;
+      if (start.isAfter(range.end)) continue;
+      final lastDay = _shiftBudgetDay(start, entry.coverageDays - 1);
+      if (lastDay.isBefore(range.start)) continue;
+      final amount = _minor(entry.amount);
+      for (var index = 0; index < entry.coverageDays; index++) {
+        final flow = days[_shiftBudgetDay(start, index)];
+        if (flow == null) continue;
+        flow.addExpense(
+          entry.categoryId,
+          _budgetShare(amount, entry.coverageDays, index),
+        );
+      }
+    }
+    return days;
   }
 }
+
+DateTime _shiftBudgetDay(DateTime day, int offset) =>
+    DateTime(day.year, day.month, day.day + offset);
+
+Iterable<DateTime> _budgetDays(DateTimeRange range) sync* {
+  for (
+    var day = range.start;
+    !day.isAfter(range.end);
+    day = _shiftBudgetDay(day, 1)
+  ) {
+    yield day;
+  }
+}
+
+int _budgetShare(int amount, int days, int index) =>
+    amount ~/ days + (index < amount % days ? 1 : 0);
 
 int _allocatedBudget(Map<String, int> limits) => limits.entries.fold(
   0,

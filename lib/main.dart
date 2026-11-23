@@ -4,10 +4,7 @@ import 'package:moneyflow1/appearance.dart';
 import 'package:moneyflow1/home.dart' show MainPage;
 import 'package:shared_preferences/shared_preferences.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(MyApp(preferences: await _openPreferences()));
-}
+void main() => runApp(const MyApp());
 
 Future<SharedPreferences?> _openPreferences() async {
   try {

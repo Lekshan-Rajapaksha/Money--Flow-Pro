@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:math';
@@ -20,9 +24,11 @@ part 'mobile/dashboard.dart';
 part 'mobile/planning.dart';
 part 'mobile/budget_period.dart';
 part 'mobile/budget_plan.dart';
+part 'mobile/plan_notifications.dart';
 part 'mobile/editors.dart';
 part 'mobile/csv_import.dart';
 part 'mobile/theme_colors.dart';
+part 'mobile/launch.dart';
 
 // A registry of all IconData that may be stored/loaded from JSON.
 // This const map lets Flutter's tree-shaker know at compile time which
@@ -119,8 +125,14 @@ class Transaction {
   final DateTime date;
   final String accountId;
   final String? destinationId;
+  final int coverageDays;
+  final DateTime? coverageStart;
+
+  DateTime get _planStart => DateUtils.dateOnly(coverageStart ?? date);
 
   bool get isTransfer => destinationId != null;
+  bool involvesAccount(String account) =>
+      accountId == account || destinationId == account;
   _EntryKind get _kind => isTransfer ? _EntryKind.transfer : (isExpense ? _EntryKind.expense : _EntryKind.income);
 
   Transaction({
@@ -131,6 +143,8 @@ class Transaction {
     required this.date,
     this.accountId = _defaultAccountId,
     this.destinationId,
+    this.coverageDays = 1,
+    this.coverageStart,
     String? id, // Allow passing an ID for persistence
   }) : id = id ?? DateTime.now().toIso8601String() + Random().nextDouble().toString();
 
@@ -151,6 +165,8 @@ class Transaction {
       date: date ?? this.date,
       accountId: accountId,
       destinationId: destinationId,
+      coverageDays: coverageDays,
+      coverageStart: coverageStart,
     );
   }
 
@@ -163,6 +179,8 @@ class Transaction {
     'categoryId': categoryId,
     'date': date.toIso8601String(),
     'accountId': accountId,
+    if (coverageDays > 1) 'coverageDays': coverageDays,
+    if (coverageStart != null) 'coverageStart': coverageStart!.toIso8601String(),
     if (destinationId != null) 'destinationId': destinationId,
   };
 
@@ -174,6 +192,8 @@ class Transaction {
     categoryId: json['categoryId'],
     date: DateTime.parse(json['date']),
     accountId: json['accountId'] as String? ?? _defaultAccountId,
+    coverageDays: (json['coverageDays'] as int? ?? 1).clamp(1, 31),
+    coverageStart: DateTime.tryParse(json['coverageStart'] as String? ?? ''),
     destinationId: json['destinationId'] as String?,
   );
 }
@@ -191,7 +211,8 @@ class Loan {
   bool isDeleted; // For recycle bin
   DateTime? deletedDate; // To track when it was deleted
 
-  bool get isPaid => paidAmount >= amount; // MODIFIED: Getter instead of field
+  int get _outstanding => max(0, _minor(amount) - _minor(paidAmount));
+  bool get isPaid => _outstanding == 0;
 
   Loan({
     required this.personName,
@@ -230,7 +251,7 @@ class Loan {
       type: type ?? this.type,
       date: date ?? this.date,
       isDeleted: isDeleted ?? this.isDeleted,
-      deletedDate: deletedDate ?? this.deletedDate,
+      deletedDate: isDeleted == false ? null : deletedDate ?? this.deletedDate,
     );
   }
 
@@ -251,7 +272,7 @@ class Loan {
   factory Loan.fromJson(Map<String, dynamic> json) => Loan(
     id: json['id'],
     personName: json['personName'],
-    amount: json['amount'],
+    amount: (json['amount'] as num).toDouble(),
     paidAmount: (json['paidAmount'] as num?)?.toDouble() ?? (json['isPaid'] == true ? (json['amount'] as num).toDouble() : 0.0), // NEW
     reason: json['reason'],
     type: LoanType.values.byName(json['type']),
@@ -1963,7 +1984,9 @@ class BudgetPage extends StatefulWidget {
   final List<Loan> loans;
   final Function(Loan) onAddLoan;
   final Function(Loan) onToggleLoanStatus;
-  final Function(String, double) onAddLoanPayment;
+  final void Function(String, int) onAddLoanPayment;
+  final void Function(String, int) onAddLoanPrincipal;
+  final Widget Function(Loan)? reminderButton;
   final Function(String) onDeleteLoan;
   final Function(String) onRestoreLoan;
   final Function(String) onPermanentlyDeleteLoan;
@@ -1975,6 +1998,8 @@ class BudgetPage extends StatefulWidget {
     required this.onAddLoan,
     required this.onToggleLoanStatus,
     required this.onAddLoanPayment,
+    required this.onAddLoanPrincipal,
+    this.reminderButton,
     required this.onDeleteLoan,
     required this.onRestoreLoan,
     required this.onPermanentlyDeleteLoan,
@@ -2021,10 +2046,10 @@ class _BudgetPageState extends State<BudgetPage> {
   Widget build(BuildContext context) {
     final double totalGiven = widget.loans
         .where((l) => l.type == LoanType.given && !l.isPaid && !l.isDeleted)
-        .fold(0.0, (sum, item) => sum + item.amount);
+        .fold(0.0, (sum, item) => sum + item._outstanding / 100);
     final double totalTaken = widget.loans
         .where((l) => l.type == LoanType.taken && !l.isPaid && !l.isDeleted)
-        .fold(0.0, (sum, item) => sum + item.amount);
+        .fold(0.0, (sum, item) => sum + item._outstanding / 100);
 
     final activeLoans = _sortLoans(widget.loans.where((l) => !l.isPaid && !l.isDeleted).toList());
     final paidLoans = _sortLoans(widget.loans.where((l) => l.isPaid && !l.isDeleted).toList());
@@ -2105,12 +2130,12 @@ class _BudgetPageState extends State<BudgetPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _buildStatItem("You Lent", '${widget.currencySymbol}${totalGiven.toStringAsFixed(2)}', context.positive),
+            _buildStatItem("Owed to you", '${widget.currencySymbol}${totalGiven.toStringAsFixed(2)}', context.positive),
             const SizedBox(
               height: 50,
               child: VerticalDivider(),
             ),
-            _buildStatItem("You Owe", '${widget.currencySymbol}${totalTaken.toStringAsFixed(2)}', context.colors.error),
+            _buildStatItem("You owe", '${widget.currencySymbol}${totalTaken.toStringAsFixed(2)}', context.colors.error),
           ],
         ),
       ),
@@ -2226,15 +2251,18 @@ class _BudgetPageState extends State<BudgetPage> {
       itemBuilder: (context, index) {
         final loan = loans[index];
         return LoanCard(
+          key: ValueKey(loan.id),
           loan: loan,
           currencySymbol: widget.currencySymbol,
           type: type,
           onTogglePaid: () => widget.onToggleLoanStatus(loan),
           onAddPayment: (amount) => widget.onAddLoanPayment(loan.id, amount),
+          onAddPrincipal: (amount) => widget.onAddLoanPrincipal(loan.id, amount),
+          reminderButton: type == LoanListType.active ? widget.reminderButton?.call(loan) : null,
           onDelete: () => widget.onDeleteLoan(loan.id),
           onRestore: () => widget.onRestoreLoan(loan.id),
           onPermanentlyDelete: () => widget.onPermanentlyDeleteLoan(loan.id),
-        ).animate(delay: (100 * index).ms).fadeIn(duration: 400.ms).slideX(begin: 0.5);
+        );
       },
     );
   }
@@ -2258,198 +2286,174 @@ class _BudgetPageState extends State<BudgetPage> {
 enum LoanListType { active, paid, deleted }
 
 class LoanCard extends StatelessWidget {
-  final Loan loan;
-  final String currencySymbol;
-  final LoanListType type;
-  final VoidCallback? onTogglePaid;
-  final Function(double)? onAddPayment;
-  final VoidCallback? onDelete;
-  final VoidCallback? onRestore;
-  final VoidCallback? onPermanentlyDelete;
-
   const LoanCard({
     super.key,
     required this.loan,
     required this.currencySymbol,
     required this.type,
-    this.onTogglePaid,
-    this.onAddPayment,
-    this.onDelete,
-    this.onRestore,
-    this.onPermanentlyDelete,
+    required this.onTogglePaid,
+    required this.onAddPayment,
+    required this.onAddPrincipal,
+    this.reminderButton,
+    required this.onDelete,
+    required this.onRestore,
+    required this.onPermanentlyDelete,
   });
+
+  final Loan loan;
+  final String currencySymbol;
+  final LoanListType type;
+  final VoidCallback onTogglePaid;
+  final ValueChanged<int> onAddPayment;
+  final ValueChanged<int> onAddPrincipal;
+  final Widget? reminderButton;
+  final VoidCallback onDelete;
+  final VoidCallback onRestore;
+  final VoidCallback onPermanentlyDelete;
+
+  String _amount(int minor) => NumberFormat.currency(
+    symbol: '$currencySymbol ',
+    decimalDigits: 2,
+  ).format(minor / 100);
+
+  Future<void> _editAmount(
+    BuildContext context, {
+    required bool payment,
+  }) async {
+    var amount = '';
+    final outstanding = loan._outstanding;
+    final entered = await _showEditor<int>(
+      context,
+      Builder(
+        builder: (context) => _Editor(
+          title: payment ? 'Record payment' : 'Add to loan',
+          fields: [
+            Text('${loan.personName} · ${_amount(outstanding)} remaining'),
+            _AmountField(
+              label: payment ? 'Payment amount' : 'Additional amount',
+              symbol: currencySymbol,
+              onChanged: (value) => amount = value,
+              validateAmount: (minor) => payment && minor > outstanding
+                  ? 'Enter ${_amount(outstanding)} or less.'
+                  : null,
+            ),
+          ],
+          onSave: () => Navigator.pop(context, _parseMoney(amount)),
+        ),
+      ),
+    );
+    if (entered != null) {
+      (payment ? onAddPayment : onAddPrincipal)(entered);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isGiven = loan.type == LoanType.given;
-    final color = isGiven ? context.positive : context.colors.error;
-    final progress = loan.amount > 0 ? (loan.paidAmount / loan.amount).clamp(0.0, 1.0) : 0.0;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8.0),
-      padding: const EdgeInsets.all(12.0),
-      decoration: BoxDecoration(
-        color: context.colors.surface,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: context.colors.shadow.withAlpha(20),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          )
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                isGiven ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
-                color: color,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  loan.personName,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Text(
-                '$currencySymbol${loan.amount.toStringAsFixed(2)}',
-                style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          if (loan.reason != null && loan.reason!.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              loan.reason!,
-              style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 12),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-          if (type != LoanListType.deleted) ...[
-            const SizedBox(height: 10),
+    final given = loan.type == LoanType.given;
+    final color = given ? context.positive : context.colors.error;
+    final active = type == LoanListType.active;
+    final deleted = type == LoanListType.deleted;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: _Surface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
               children: [
+                _IconChip(
+                  given ? Icons.north_east_rounded : Icons.south_west_rounded,
+                  color: color,
+                ),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      backgroundColor: context.colors.surfaceContainerHighest,
-                      valueColor: AlwaysStoppedAnimation<Color>(color.withOpacity(0.7)),
-                      minHeight: 6,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        loan.personName,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      Text(given ? 'Loan given' : 'Loan taken'),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  '${(progress * 100).toInt()}%',
-                  style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 10, fontWeight: FontWeight.bold),
+                if (reminderButton != null) reminderButton!,
+                PopupMenuButton<VoidCallback>(
+                  tooltip: 'Loan options',
+                  onSelected: (action) => action(),
+                  itemBuilder: (context) => [
+                    if (deleted) ...[
+                      PopupMenuItem(
+                        value: onRestore,
+                        child: const Text('Restore loan'),
+                      ),
+                      PopupMenuItem(
+                        value: onPermanentlyDelete,
+                        child: const Text('Delete permanently'),
+                      ),
+                    ] else ...[
+                      PopupMenuItem(
+                        value: onTogglePaid,
+                        child: Text(
+                          active ? 'Mark fully paid' : 'Reset payments',
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: onDelete,
+                        child: const Text('Move to bin'),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 8),
             Text(
-              'Paid: $currencySymbol${loan.paidAmount.toStringAsFixed(2)} / $currencySymbol${loan.amount.toStringAsFixed(2)}',
-              style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 11),
+              [
+                DateFormat.yMMMd().format(loan.date),
+                if (loan.reason case final reason? when reason.isNotEmpty)
+                  reason,
+              ].join(' · '),
+              style: TextStyle(color: context.colors.onSurfaceVariant),
             ),
-          ],
-          const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Date: ${DateFormat.yMMMd().format(loan.date)}',
-                style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 11),
+            if (!deleted) ...[
+              const SizedBox(height: 10),
+              _Meter(
+                label: '${_amount(loan._outstanding)} remaining',
+                detail:
+                    '${_amount(_minor(loan.paidAmount))} / ${_amount(_minor(loan.amount))} paid',
+                amount: _minor(loan.paidAmount),
+                target: _minor(loan.amount),
               ),
-              _buildActionMenu(context),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  if (active)
+                    FilledButton.tonalIcon(
+                      onPressed: () => _editAmount(context, payment: true),
+                      icon: const Icon(Icons.payments_outlined, size: 18),
+                      label: const Text('Record payment'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: () => _editAmount(context, payment: false),
+                    icon: const Icon(Icons.add_rounded, size: 18),
+                    label: const Text('Add to loan'),
+                  ),
+                ],
+              ),
             ],
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
-
-  Widget _buildActionMenu(BuildContext context) {
-    List<PopupMenuEntry<String>> items = [];
-    switch (type) {
-      case LoanListType.active:
-      case LoanListType.paid:
-        items.addAll([
-          const PopupMenuItem(value: 'add_payment', child: Text('Add Partial Payment')),
-          PopupMenuItem(value: 'toggle_paid', child: Text(loan.isPaid ? 'Mark as Unpaid' : 'Mark as Fully Paid')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(value: 'delete', child: Text('Move to Bin')),
-        ]);
-        break;
-      case LoanListType.deleted:
-        items.addAll([
-          const PopupMenuItem(value: 'restore', child: Text('Restore Loan')),
-          const PopupMenuDivider(),
-          PopupMenuItem(
-            value: 'delete_perm',
-            child: Text('Delete Permanently', style: TextStyle(color: context.colors.error)),
-          ),
-        ]);
-        break;
-    }
-
-    return PopupMenuButton<String>(
-      icon: Icon(Icons.more_horiz_rounded, color: context.colors.onSurfaceVariant),
-      onSelected: (value) {
-        if (value == 'toggle_paid') onTogglePaid?.call();
-        if (value == 'add_payment') _showAddPaymentDialog(context);
-        if (value == 'delete') onDelete?.call();
-        if (value == 'restore') onRestore?.call();
-        if (value == 'delete_perm') onPermanentlyDelete?.call();
-      },
-      itemBuilder: (context) => items,
-    );
-  }
-  
-  void _showAddPaymentDialog(BuildContext context) {
-    final TextEditingController controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Add Payment'),
-          content: TextField(
-            controller: controller,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              labelText: 'Amount ($currencySymbol)',
-              hintText: 'e.g. 50',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final double? amount = double.tryParse(controller.text);
-                if (amount != null && amount > 0) {
-                  onAddPayment?.call(amount);
-                  Navigator.pop(context);
-                }
-              },
-              child: const Text('Add'),
-            ),
-          ],
-        );
-      },
-    );
-  }
 }
-// --- [END] REVAMPED WIDGETS ---
 
 // --- MODIFIED: Profile Page Widget ---
 
@@ -2475,8 +2479,7 @@ class ProfilePage extends StatelessWidget {
   final VoidCallback onFactoryReset;
   final String? profileImagePath; // NEW
   final Function(String) onProfileImageChanged;
-  final double? dailyLimit; // NEW
-  final Function(double?) onDailyLimitChanged; // NEW
+  final Widget accountsSetting;
 
   ProfilePage({
     this.themeMode = ThemeMode.system,
@@ -2501,49 +2504,10 @@ class ProfilePage extends StatelessWidget {
     required this.onFactoryReset,
     this.profileImagePath, // NEW
     required this.onProfileImageChanged, // NEW
-    this.dailyLimit, // NEW
-    required this.onDailyLimitChanged, // NEW
+    required this.accountsSetting,
   });
 
-  void _showDailyLimitDialog(BuildContext context) {
-    final TextEditingController _limitController = TextEditingController(
-      text: dailyLimit != null && dailyLimit! > 0 ? dailyLimit.toString() : '',
-    );
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Set Daily Limit'),
-          content: TextField(
-            controller: _limitController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              hintText: 'Enter your daily limit',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final double? limit = double.tryParse(_limitController.text);
-                if (limit != null && limit.isFinite && limit >= 0) {
-                  onDailyLimitChanged(limit);
-                } else if (_limitController.text.isEmpty) {
-                  onDailyLimitChanged(0.0); // Clear limit
-                }
-                Navigator.pop(context);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-  }
+
 
 
   // NEW: Method to handle picking an image from the gallery
@@ -2665,6 +2629,7 @@ class ProfilePage extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20.0),
       child: Column(
         children: [
+          accountsSetting,
           if (onThemeModeChanged != null)
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -2676,14 +2641,6 @@ class ProfilePage extends StatelessWidget {
             ),
           _buildCurrencySettingItem(context),
           const Divider(height: 30),
-          SettingsListItem(
-            icon: Icons.track_changes,
-            iconColor: Colors.orange,
-            title: "Daily Limit",
-            onTap: () {
-              _showDailyLimitDialog(context);
-            },
-          ),
           SettingsListItem(
             icon: Icons.account_balance_wallet,
             iconColor: context.positive,
@@ -2949,11 +2906,19 @@ class _AddLoanFormState extends State<AddLoanForm> {
   final _reasonController = TextEditingController();
   LoanType _loanType = LoanType.given;
 
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _amountController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
   void _submit() {
     if (_formKey.currentState!.validate()) {
       final newLoan = Loan(
-        personName: _nameController.text,
-        amount: double.parse(_amountController.text),
+        personName: _nameController.text.trim(),
+        amount: _parseMoney(_amountController.text)! / 100,
         reason: _reasonController.text,
         type: _loanType,
         date: DateTime.now(),
@@ -3018,7 +2983,7 @@ class _AddLoanFormState extends State<AddLoanForm> {
               decoration: InputDecoration(
                 labelText: _loanType == LoanType.given ? "To Whom?" : "From Whom?",
               ),
-              validator: (v) => v == null || v.isEmpty ? "Please enter a name" : null,
+              validator: (v) => v == null || v.trim().isEmpty ? "Please enter a name" : null,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -3028,7 +2993,12 @@ class _AddLoanFormState extends State<AddLoanForm> {
                 prefixText: '${widget.currencySymbol} ',
               ),
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              validator: (v) => v == null || double.tryParse(v) == null ? "Enter a valid amount" : null,
+              validator: (value) {
+                final amount = _parseMoney(value ?? '');
+                return amount == null || amount <= 0
+                    ? 'Enter a positive amount with up to two decimal places.'
+                    : null;
+              },
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -4137,9 +4107,18 @@ class _PersistenceService {
   }
 
   // --- Loans ---
-  Future<void> saveLoans(List<Loan> loans) async {
-    final data = loans.map((l) => l.toJson()).toList();
-    await _saveJsonToFile('loans.json', data);
+  Future<void> _loanWrite = Future<void>.value();
+
+  Future<void> saveLoans(List<Loan> loans) {
+    final data = jsonEncode(loans.map((loan) => loan.toJson()).toList());
+    final write = _loanWrite.then((_) async {
+      final file = await _getLocalFile('loans.json');
+      final staging = File('${file.path}.tmp');
+      await staging.writeAsString(data, flush: true);
+      await staging.rename(file.path);
+    });
+    _loanWrite = write.then<void>((_) {}, onError: (Object _) {});
+    return write;
   }
 
   Future<List<Loan>> loadLoans() async {
@@ -4211,11 +4190,15 @@ class _PersistenceService {
     required Currency currency,
     required bool includeFixedDeposits,
     required bool includeSavings,
+    required String activeAccount,
+    required bool hideOverviewAmounts,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('currency', currency.name);
     await prefs.setBool('includeFixedDeposits', includeFixedDeposits);
     await prefs.setBool('includeSavings', includeSavings);
+    await prefs.setString('activeAccount', activeAccount);
+    await prefs.setBool('hideOverviewAmounts', hideOverviewAmounts);
   }
 
   Future<Map<String, dynamic>> loadSettings() async {
@@ -4225,13 +4208,15 @@ class _PersistenceService {
       'currency': currencyName != null ? Currency.values.byName(currencyName) : null,
       'includeFixedDeposits': prefs.getBool('includeFixedDeposits'),
       'includeSavings': prefs.getBool('includeSavings'),
+      'activeAccount': prefs.getString('activeAccount'),
+      'hideOverviewAmounts': prefs.getBool('hideOverviewAmounts'),
     };
   }
 
   // --- Daily Limit ---
-  Future<void> saveDailyLimit(double limit) async {
+  Future<void> clearLegacyDailyLimit() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('dailyLimit', limit);
+    await prefs.remove('dailyLimit');
   }
 
   Future<double?> loadDailyLimit() async {
@@ -4242,7 +4227,7 @@ class _PersistenceService {
   // --- Factory Reset ---
   Future<void> clearAllData() async {
     // Clear all JSON files
-    await _ledgerWrite;
+    await Future.wait([_ledgerWrite, _loanWrite]);
     for (final name in ['ledger.json', 'ledger.json.tmp', 'transactions.json']) {
       final file = await _getLocalFile(name);
       if (await file.exists()) await file.delete();

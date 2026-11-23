@@ -47,17 +47,20 @@ void main() {
       expect(find.text('Legacy salary'), findsOneWidget);
       expect(find.text(r'$ 125.00'), findsWidgets);
 
-      await _tap(tester, find.text('Add'));
+      await _tap(tester, find.byTooltip('Settings'));
+      await _tap(tester, find.text('Accounts'));
+      await _tap(tester, find.byTooltip('Add account'));
       await tester.enterText(_field('Account name'), 'Rainy day');
       await _tap(tester, find.text('Save'));
       expect(find.text('Rainy day'), findsOneWidget);
+      await _tap(tester, find.text('Overview'));
 
       await _tap(tester, find.byTooltip('Add transaction'));
       await _tap(tester, find.text('Transfer'));
       await tester.enterText(_field('Amount'), '25.00');
       await _tap(tester, find.text('Save'));
       expect(find.text(r'$ 100.00'), findsOneWidget);
-      expect(find.text(r'$ 125.00'), findsNWidgets(2));
+      expect(find.text(r'$ 125.00'), findsOneWidget);
 
       await _tap(tester, find.text('Activity'));
       await _tap(tester, find.text('Transfers'));
@@ -66,12 +69,180 @@ void main() {
     },
   );
 
+  testWidgets('switches accounts in Settings and scopes Insights by date', (
+    tester,
+  ) async {
+    final today = DateTime.now().toIso8601String();
+    SharedPreferences.setMockInitialValues({'dailyLimit': 75.0});
+    File('${documents.path}/ledger.json').writeAsStringSync(
+      jsonEncode({
+        'version': 1,
+        'accounts': [
+          {'id': 'main', 'name': 'Main account', 'kind': 'cash', 'opening': 0},
+          {
+            'id': 'bank',
+            'name': 'Bank account',
+            'kind': 'bank',
+            'opening': 50000,
+          },
+        ],
+        'transactions': [
+          for (final (id, category, amount) in [
+            ('main', 'food', 40),
+            ('bank', 'shopping', 25),
+          ])
+            {
+              'id': 'expense-$id',
+              'description': '$id purchase',
+              'amount': amount,
+              'isExpense': true,
+              'categoryId': category,
+              'date': today,
+              'accountId': id,
+            },
+        ],
+        'budgets': {},
+        'goals': [],
+        'schedule': [],
+      }),
+    );
+    await _launch(tester);
+    expect(find.text('Spending plans'), findsNothing);
+    expect(find.text('main purchase'), findsOneWidget);
+    expect(find.text('bank purchase'), findsNothing);
+
+    await _tap(tester, find.byTooltip('Settings'));
+    await _tap(tester, find.text('Accounts'));
+    await _tap(tester, find.text('Bank account'));
+    await _tap(tester, find.text('Overview'));
+    expect(find.text('Bank account'), findsOneWidget);
+    expect(find.text(r'$ 475.00'), findsOneWidget);
+    expect(find.text('bank purchase'), findsOneWidget);
+    await _tap(tester, find.byTooltip('Hide overview amounts'));
+    expect(find.text(r'$ 475.00'), findsNothing);
+
+    await _tap(tester, find.text('Plan'));
+    expect(find.text(r'$ 65.00 / $ 75.00'), findsOneWidget);
+    await _tap(tester, find.text('Insights'));
+    await tester.tap(find.text('Week'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'$ 25.00'), findsWidgets);
+    await tester.tap(find.text('All accounts'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'$ 65.00'), findsWidgets);
+    await tester.tap(find.text('Day'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'$ 65.00'), findsWidgets);
+    await tester.tap(find.byTooltip('Previous day'));
+    await tester.pumpAndSettle();
+    expect(find.text('Back to today'), findsOneWidget);
+    expect(find.text(r'$ 65.00'), findsNothing);
+
+    await tester.tap(find.text('Back to today'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'$ 65.00'), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _launch(tester);
+    expect(find.text('Bank account'), findsOneWidget);
+    expect(find.byTooltip('Show overview amounts'), findsOneWidget);
+  });
+
+  testWidgets(
+    'opens with the branded splash and saves loan payments and top-ups',
+    (tester) async {
+      File('${documents.path}/loans.json').writeAsStringSync(
+        jsonEncode([
+          {
+            'id': 'loan-one',
+            'type': 'given',
+            'personName': 'Amaya',
+            'amount': 100,
+            'date': DateTime.now().toIso8601String(),
+          },
+        ]),
+      );
+
+      SharedPreferences.setMockInitialValues({'savingsPot': 40.0});
+      File('${documents.path}/fixed_deposits.json').writeAsStringSync(
+        jsonEncode([
+          {
+            'amount': 200.0,
+            'maturityDate': DateTime(2090, 1, 2).toIso8601String(),
+          },
+        ]),
+      );
+      await _launch(tester, verifySplash: true);
+      final cards = find.byKey(const PageStorageKey('overview-cards'));
+      await tester.drag(cards, const Offset(-550, 0));
+      await tester.pumpAndSettle();
+      expect(find.text('Owed to you'), findsOneWidget);
+      expect(find.text('Loan summary'), findsOneWidget);
+      expect(find.text('Amaya'), findsOneWidget);
+      expect(find.text('Recent activity'), findsNothing);
+      await tester.drag(cards, const Offset(-550, 0));
+      await tester.pumpAndSettle();
+      expect(find.text('Savings & deposits'), findsOneWidget);
+      expect(find.text(r'$ 240.00'), findsOneWidget);
+      expect(find.text('Savings summary'), findsOneWidget);
+      expect(find.text('Savings pot balance'), findsOneWidget);
+      expect(find.text('Loan summary'), findsNothing);
+
+      Future<void> openLoans() async {
+        await _tap(tester, find.text('More'));
+        await _tap(tester, find.text('Loans'));
+      }
+
+      await openLoans();
+      expect(find.text(r'$ 100.00 remaining'), findsOneWidget);
+      await _tap(tester, find.text('Record payment'));
+      await tester.enterText(_field('Payment amount'), '101');
+      await _tap(tester, find.text('Save'));
+      expect(find.text(r'Enter $ 100.00 or less.'), findsOneWidget);
+      await tester.enterText(_field('Payment amount'), '25.50');
+      await _tap(tester, find.text('Save'));
+      expect(find.text(r'$ 74.50 remaining'), findsOneWidget);
+      expect(find.text(r'$74.50'), findsOneWidget);
+
+      await _tap(tester, find.text('Add to loan'));
+      await tester.enterText(_field('Additional amount'), '50');
+      await _tap(tester, find.text('Save'));
+      expect(find.text(r'$ 124.50 remaining'), findsOneWidget);
+      expect(find.text(r'$ 25.50 / $ 150.00 paid'), findsOneWidget);
+
+      final saved = await tester.runAsync(() async {
+        final file = File('${documents.path}/loans.json');
+        for (var attempt = 0; attempt < 50; attempt++) {
+          await tester.pump();
+          final loan =
+              (jsonDecode(await file.readAsString()) as List).single as Map;
+          if (loan['amount'] == 150 && loan['paidAmount'] == 25.5) return true;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        return false;
+      });
+      expect(saved, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _launch(tester);
+      await openLoans();
+      expect(find.text(r'$ 124.50 remaining'), findsOneWidget);
+      await _tap(tester, find.text('Record payment'));
+      await tester.enterText(_field('Payment amount'), '124.50');
+      await _tap(tester, find.text('Save'));
+      expect(find.text('Amaya'), findsNothing);
+      await _tap(tester, find.text('Paid'));
+      expect(find.text(r'$ 0.00 remaining'), findsOneWidget);
+    },
+  );
+
   testWidgets('records a recurring bill and persists the next occurrence', (
     tester,
   ) async {
     await _launch(tester);
     await _tap(tester, find.text('Plan'));
-    await _tap(tester, find.text('Month'));
+    await _tap(tester, find.byTooltip('Budget period'));
+    await tester.tap(_budgetPeriodItem('Month'));
+    await tester.pumpAndSettle();
     await _tap(tester, find.text('Add limit'));
     await tester.enterText(_field('Monthly limit'), '100');
     await _tap(tester, find.text('Save'));
@@ -161,7 +332,9 @@ void main() {
 
       await tester.drag(plan, const Offset(0, 850));
       await tester.pumpAndSettle();
-      await _tap(tester, find.text('Week'));
+      await _tap(tester, find.byTooltip('Budget period'));
+      await tester.tap(_budgetPeriodItem('Week'));
+      await tester.pumpAndSettle();
       await _tap(tester, find.byTooltip('Set overall limit'));
       await _tap(tester, find.text('Every week'));
       await _tap(tester, find.text('Only this week').last);
@@ -169,7 +342,7 @@ void main() {
       await _tap(tester, find.text('Save'));
       expect(find.text(r'$ 125.00 / $ 3,000.00'), findsOneWidget);
       await _tap(tester, find.byTooltip('Next week'));
-      expect(find.text('Weekly spending'), findsOneWidget);
+      expect(find.text(r'$ 0.00 / $ 6,300.00'), findsOneWidget);
       await _tap(tester, find.text('Back to this week'));
       expect(find.text(r'$ 125.00 / $ 3,000.00'), findsOneWidget);
 
@@ -196,6 +369,61 @@ void main() {
       expect(find.text(r'$ 125.00 / $ 900.00'), findsOneWidget);
     },
   );
+
+  testWidgets('rolls up daily limits and spreads one bulk expense', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final monday = DateTime(now.year, now.month, now.day - now.weekday - 6);
+    File('${documents.path}/ledger.json').writeAsStringSync(
+      jsonEncode({
+        'version': 1,
+        'accounts': [
+          {'id': 'main', 'name': 'Main account', 'kind': 'cash', 'opening': 0},
+        ],
+        'transactions': [
+          {
+            'id': 'weekly-bread',
+            'description': 'Bread for the week',
+            'amount': 700,
+            'isExpense': true,
+            'categoryId': 'food',
+            'date':
+                DateTime(
+                  monday.year,
+                  monday.month,
+                  monday.day - 1,
+                ).toIso8601String(),
+            'coverageDays': 7,
+            'coverageStart': monday.toIso8601String(),
+          },
+        ],
+        'budgets': {},
+        'periodBudgets': {
+          'daily': {'food': 30000},
+        },
+        'goals': [],
+        'schedule': [],
+      }),
+    );
+
+    await _launch(tester);
+    expect(find.text(r'-$ 700.00'), findsWidgets);
+    await _tap(tester, find.text('Plan'));
+    await _tap(tester, find.byTooltip('Budget period'));
+    await tester.tap(_budgetPeriodItem('Week'));
+    await tester.pumpAndSettle();
+    await _tap(tester, find.byTooltip('Previous week'));
+    expect(find.text(r'$ 700.00 / $ 2,100.00'), findsWidgets);
+
+    await tester.scrollUntilVisible(find.text('Daily breakdown'), 200);
+    await _tap(tester, find.text('Daily breakdown'));
+    await tester.scrollUntilVisible(
+      find.text(r'$ 100.00 / $ 300.00').last,
+      200,
+    );
+    expect(find.text(r'$ 200.00 left'), findsWidgets);
+  });
 
   testWidgets('appearance follows the device and persists across the app', (
     tester,
@@ -302,22 +530,29 @@ void main() {
     expect(find.text('Import'), findsNothing);
     await _tap(tester, find.text('Close'));
     await _tap(tester, find.text('Insights'));
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -280));
-    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Food'), 200);
     await _tap(tester, find.text('Food'));
     expect(find.text('Filters on'), findsOneWidget);
     expect(find.text('Cafe, "lunch"'), findsOneWidget);
   });
 }
 
+Finder _budgetPeriodItem(String label) => find.byWidgetPredicate(
+  (widget) =>
+      widget is CheckedPopupMenuItem &&
+      widget.child is Text &&
+      (widget.child! as Text).data == label,
+);
+
 Finder _field(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
 
-Future<void> _launch(WidgetTester tester) async {
+Future<void> _launch(WidgetTester tester, {bool verifySplash = false}) async {
   await tester.runAsync(() async {
     await tester.pumpWidget(const MyApp());
-    for (var attempt = 0; attempt < 50; attempt++) {
+    if (verifySplash) expect(find.text('Created by LexN'), findsOneWidget);
+    for (var attempt = 0; attempt < 300; attempt++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       await tester.pump();
       if (find.text('Your overview').evaluate().isNotEmpty) return;
