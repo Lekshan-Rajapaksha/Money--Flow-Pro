@@ -28,11 +28,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            keyAlias = keyProperties["keyAlias"] as String
-            keyPassword = keyProperties["keyPassword"] as String
-            storeFile = keyProperties["storeFile"]?.let { file(it as String) }
-            storePassword = keyProperties["storePassword"] as String
+        if (keyPropertiesFile.exists()) {
+            create("release") {
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+                storeFile = keyProperties.getProperty("storeFile")?.let { file(it) }
+                storePassword = keyProperties.getProperty("storePassword")
+            }
         }
     }
 
@@ -46,13 +48,17 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.findByName("release")
             ndk {
                 debugSymbolLevel = "SYMBOL_TABLE"
             }
         }
     }
 
+}
+
+dependencies {
+    implementation("androidx.core:core:1.13.1")
 }
 
 flutter {

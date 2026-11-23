@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:math';
@@ -9,13 +10,28 @@ import 'dart:io'; // NEW: For File operations
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:url_launcher/url_launcher.dart';// NEW: For picking images from gallery
 import 'package:upgrader/upgrader.dart'; // NEW: For in-app update prompts
+import 'package:flutter/services.dart';
+import 'appearance.dart';
+
+part 'mobile/ledger.dart';
+part 'mobile/shell.dart';
+part 'mobile/dashboard.dart';
+part 'mobile/planning.dart';
+part 'mobile/budget_period.dart';
+part 'mobile/budget_plan.dart';
+part 'mobile/editors.dart';
+part 'mobile/csv_import.dart';
+part 'mobile/theme_colors.dart';
 
 // A registry of all IconData that may be stored/loaded from JSON.
 // This const map lets Flutter's tree-shaker know at compile time which
 // icons the app can use, avoiding the "non-constant IconData" build error.
 const Map<int, IconData> _kIconRegistry = {
+  0xf7a4: Icons.free_breakfast_rounded,
+  0xf89a: Icons.lunch_dining_rounded,
+  0xf6ac: Icons.dinner_dining_rounded,
+  0xf5a6: Icons.bakery_dining_rounded,
   // income icons
   0xf02c6: Icons.work_outline_rounded,
   0xf4b1: Icons.watch_later_outlined,
@@ -101,6 +117,11 @@ class Transaction {
   final bool isExpense;
   final String categoryId; // Changed from Enum to String ID
   final DateTime date;
+  final String accountId;
+  final String? destinationId;
+
+  bool get isTransfer => destinationId != null;
+  _EntryKind get _kind => isTransfer ? _EntryKind.transfer : (isExpense ? _EntryKind.expense : _EntryKind.income);
 
   Transaction({
     this.description,
@@ -108,6 +129,8 @@ class Transaction {
     required this.isExpense,
     required this.categoryId,
     required this.date,
+    this.accountId = _defaultAccountId,
+    this.destinationId,
     String? id, // Allow passing an ID for persistence
   }) : id = id ?? DateTime.now().toIso8601String() + Random().nextDouble().toString();
 
@@ -126,6 +149,8 @@ class Transaction {
       isExpense: isExpense ?? this.isExpense,
       categoryId: categoryId ?? this.categoryId,
       date: date ?? this.date,
+      accountId: accountId,
+      destinationId: destinationId,
     );
   }
 
@@ -137,15 +162,19 @@ class Transaction {
     'isExpense': isExpense,
     'categoryId': categoryId,
     'date': date.toIso8601String(),
+    'accountId': accountId,
+    if (destinationId != null) 'destinationId': destinationId,
   };
 
   factory Transaction.fromJson(Map<String, dynamic> json) => Transaction(
     id: json['id'],
     description: json['description'],
-    amount: json['amount'],
+    amount: (json['amount'] as num).toDouble(),
     isExpense: json['isExpense'],
     categoryId: json['categoryId'],
     date: DateTime.parse(json['date']),
+    accountId: json['accountId'] as String? ?? _defaultAccountId,
+    destinationId: json['destinationId'] as String?,
   );
 }
 
@@ -300,517 +329,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-
-// --- Main Page with Navigation (Manages App State) ---
-
-class MainPage extends StatefulWidget {
-  const MainPage({super.key});
-
-  @override
-  _MainPageState createState() => _MainPageState();
-}
-
-class _MainPageState extends State<MainPage> {
-  // --- App-wide State Variables ---
-  int _selectedIndex = 2; // Start on the revamped Budget/Loans page
-  late PageController _pageController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pageController = PageController(initialPage: _selectedIndex);
-    _loadData();
-  }
-
-  // Data lists
-  List<Transaction> _transactions = [];
-  List<Category> _categories = [];
-  List<Loan> _loans = [];
-  List<FixedDeposit> _fixedDeposits = [];
-  double _savingsPot = 0.0;
-  double _expenseChartMaxY = 500.0; // NEW: State for expense chart limit (starts at minimum)
-  double _incomeChartMaxY = 500.0; // NEW: State for income chart limit (starts at minimum)
-  bool _isExpenseManual = false; // NEW: Tracks if user manually overrode the limit
-  bool _isIncomeManual = false; // NEW: Tracks if user manually overrode the limit
-
-  // Settings
-  Currency _selectedCurrency = Currency.USD;
-  bool _includeFixedDepositsInBalance = false;
-  bool _includeSavingsInBalance = false;
-  String _nickname = "Nickname"; // NEW
-  DateTime? _installDate; // NEW
-  String? _profileImagePath; // NEW: To store the path of the profile image
-  double? _dailyLimit; // NEW: State for daily limit
-
-
-  bool _isLoading = true; // To show a loading indicator
-  final PersistenceService _persistenceService = PersistenceService();
-
-
-  Future<void> _loadData() async {
-    final transactions = await _persistenceService.loadTransactions();
-    final categories = await _persistenceService.loadCategories();
-    final loans = await _persistenceService.loadLoans();
-    final fixedDeposits = await _persistenceService.loadFixedDeposits();
-    final savingsPot = await _persistenceService.loadSavingsPot();
-    final settings = await _persistenceService.loadSettings();
-    final nickname = await _persistenceService.loadNickname();
-    DateTime? installDate = await _persistenceService.loadInstallDate();
-    final profileImagePath = await _persistenceService.loadProfileImagePath(); // NEW
-    final dailyLimit = await _persistenceService.loadDailyLimit(); // NEW
-
-    // NEW: If install date doesn't exist, it's the first launch. Set and save it.
-    if (installDate == null) {
-      installDate = DateTime.now();
-      await _persistenceService.saveInstallDate(installDate);
-    }
-
-
-    setState(() {
-      _transactions = transactions;
-      // If no categories are saved, initialize with defaults
-      _categories = categories.isNotEmpty ? categories : _getDefaultCategories();
-      _loans = loans;
-      _fixedDeposits = fixedDeposits;
-      _savingsPot = savingsPot;
-      _selectedCurrency = settings['currency'] ?? Currency.USD;
-      _includeFixedDepositsInBalance = settings['includeFixedDeposits'] ?? false;
-      _includeSavingsInBalance = settings['includeSavings'] ?? false;
-      _nickname = nickname;
-      _installDate = installDate;
-      _profileImagePath = profileImagePath; // NEW
-      _dailyLimit = dailyLimit; // NEW
-      _isLoading = false;
-    });
-  }
-
-  List<Category> _getDefaultCategories() {
-    return [
-      // --- Default Income Categories ---
-      Category(id: 'salary', name: 'Salary', color: Colors.green, icon: Icons.work_outline_rounded, isExpense: false),
-      Category(id: 'part_time', name: 'Part-time', color: Colors.lightGreen, icon: Icons.watch_later_outlined, isExpense: false),
-      Category(id: 'bank', name: 'Bank', color: Colors.teal, icon: Icons.account_balance_rounded, isExpense: false),
-      Category(id: 'gifts', name: 'Gifts', color: Colors.pinkAccent, icon: Icons.card_giftcard_rounded, isExpense: false),
-      Category(id: 'other_income', name: 'Other Income', color: Colors.grey, icon: Icons.more_horiz_rounded, isExpense: false),
-
-      // --- Default Expense Categories ---
-      Category(id: 'food', name: 'Food', color: Colors.orange, icon: Icons.fastfood_rounded, isExpense: true),
-      Category(id: 'transport', name: 'Transport', color: Colors.blue, icon: Icons.directions_car_rounded, isExpense: true),
-      Category(id: 'shopping', name: 'Shopping', color: Colors.pink, icon: Icons.shopping_bag_rounded, isExpense: true),
-      Category(id: 'bills', name: 'Bills', color: Colors.deepPurple, icon: Icons.receipt_long_rounded, isExpense: true),
-      Category(id: 'entertainment', name: 'Entertainment', color: Colors.purple, icon: Icons.movie_rounded, isExpense: true),
-      Category(id: 'other_expense', name: 'Other', color: Colors.grey, icon: Icons.category_rounded, isExpense: true),
-    ];
-  }
-
-
-  // --- Methods to update state ---
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-      _pageController.animateToPage(
-        index,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    });
-  }
-
-  void _addTransaction(Transaction transaction) {
-    setState(() {
-      _transactions.insert(0, transaction);
-    });
-    _persistenceService.saveTransactions(_transactions);
-  }
-
-  void _editTransaction(Transaction oldTransaction, Transaction newTransaction) {
-    setState(() {
-      final index = _transactions.indexWhere((t) => t.id == oldTransaction.id);
-      if (index != -1) {
-        _transactions[index] = newTransaction;
-      }
-    });
-    _persistenceService.saveTransactions(_transactions);
-  }
-
-
-  void _deleteTransaction(Transaction transaction) {
-    final transactionIndex = _transactions.indexOf(transaction);
-    setState(() {
-      _transactions.remove(transaction);
-    });
-    _persistenceService.saveTransactions(_transactions);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('Transaction deleted'),
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(
-          label: 'UNDO',
-          onPressed: () {
-            setState(() {
-              _transactions.insert(transactionIndex, transaction);
-            });
-            _persistenceService.saveTransactions(_transactions);
-          },
-        ),
-      ),
-    );
-  }
-
-  // MODIFIED: Added isExpense parameter
-  void _addCategory(String name, Color color, IconData icon, bool isExpense) {
-    setState(() {
-      _categories.add(Category(
-        id: DateTime.now().toIso8601String(),
-        name: name,
-        color: color,
-        icon: icon,
-        isExpense: isExpense,
-      ));
-    });
-    _persistenceService.saveCategories(_categories);
-  }
-
-  void _updateCategory(Category category) {
-    setState(() {
-      final index = _categories.indexWhere((c) => c.id == category.id);
-      if (index != -1) {
-        _categories[index] = category;
-      }
-    });
-    _persistenceService.saveCategories(_categories);
-  }
-
-  void _deleteCategory(String id) {
-    setState(() {
-      final categoryToDelete = _categories.firstWhere((c) => c.id == id);
-      // Determine the correct "Other" category to move transactions to
-      final defaultCategory = _categories.firstWhere(
-            (c) => (c.isExpense == categoryToDelete.isExpense) && (c.name.toLowerCase().contains('other')),
-        orElse: () => _categories.first,
-      );
-
-      // Re-assign transactions from the deleted category
-      _transactions.where((t) => t.categoryId == id).forEach((t) {
-        final index = _transactions.indexOf(t);
-        _transactions[index] = t.copyWith(categoryId: defaultCategory.id);
-      });
-
-      // Remove the category
-      _categories.removeWhere((c) => c.id == id);
-    });
-    _persistenceService.saveCategories(_categories);
-    _persistenceService.saveTransactions(_transactions);
-  }
-
-
-  void _changeCurrency(Currency newCurrency) {
-    setState(() {
-      _selectedCurrency = newCurrency;
-    });
-    _saveSettings();
-  }
-
-  void _addFixedDeposit(FixedDeposit deposit) {
-    setState(() {
-      _fixedDeposits.add(deposit);
-    });
-    _persistenceService.saveFixedDeposits(_fixedDeposits);
-  }
-
-  void _addToSavingsPot(double amount) {
-    setState(() {
-      _savingsPot += amount;
-    });
-    _persistenceService.saveSavingsPot(_savingsPot);
-  }
-
-  void _addLoan(Loan loan) {
-    setState(() {
-      _loans.insert(0, loan);
-    });
-    _persistenceService.saveLoans(_loans);
-  }
-
-  void _toggleLoanStatus(Loan loan) {
-    setState(() {
-      final index = _loans.indexWhere((l) => l.id == loan.id);
-      if (index != -1) {
-        if (_loans[index].isPaid) {
-          _loans[index].paidAmount = 0.0;
-        } else {
-          _loans[index].paidAmount = _loans[index].amount;
-        }
-      }
-    });
-    _persistenceService.saveLoans(_loans);
-  }
-
-  // NEW: Handle partial payments
-  void _addLoanPayment(String loanId, double paymentAmount) {
-    setState(() {
-      final index = _loans.indexWhere((l) => l.id == loanId);
-      if (index != -1) {
-        _loans[index].paidAmount += paymentAmount;
-        if (_loans[index].paidAmount > _loans[index].amount) {
-          _loans[index].paidAmount = _loans[index].amount; // Cap at max
-        }
-      }
-    });
-    _persistenceService.saveLoans(_loans);
-  }
-
-  void _deleteLoan(String loanId) {
-    setState(() {
-      final index = _loans.indexWhere((l) => l.id == loanId);
-      if (index != -1) {
-        _loans[index].isDeleted = true;
-        _loans[index].deletedDate = DateTime.now();
-      }
-    });
-    _persistenceService.saveLoans(_loans);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Loan moved to Recycle Bin')),
-    );
-  }
-
-  void _restoreLoan(String loanId) {
-    setState(() {
-      final index = _loans.indexWhere((l) => l.id == loanId);
-      if (index != -1) {
-        _loans[index].isDeleted = false;
-        _loans[index].deletedDate = null;
-      }
-    });
-    _persistenceService.saveLoans(_loans);
-  }
-
-  void _permanentlyDeleteLoan(String loanId) {
-    setState(() {
-      _loans.removeWhere((l) => l.id == loanId);
-    });
-    _persistenceService.saveLoans(_loans);
-  }
-
-  void _saveSettings() {
-    _persistenceService.saveSettings(
-      currency: _selectedCurrency,
-      includeFixedDeposits: _includeFixedDepositsInBalance,
-      includeSavings: _includeSavingsInBalance,
-    );
-  }
-
-  // --- NEW: Nickname, Profile Image, and Reset Handlers ---
-  void _updateNickname(String newNickname) {
-    setState(() {
-      _nickname = newNickname;
-    });
-    _persistenceService.saveNickname(newNickname);
-  }
-
-  // NEW: Method to handle updating the profile image path
-  void _updateProfileImage(String path) {
-    setState(() {
-      _profileImagePath = path;
-    });
-    _persistenceService.saveProfileImagePath(path);
-  }
-
-  // NEW: Method to handle updating the daily limit
-  void _updateDailyLimit(double? limit) {
-    setState(() {
-      _dailyLimit = limit;
-    });
-    _persistenceService.saveDailyLimit(limit ?? 0.0);
-  }
-
-  // NEW: Method to handle updating the expense chart limit
-  void _updateExpenseChartMaxY(double newValue, bool isManual) {
-    setState(() {
-      _expenseChartMaxY = newValue;
-      if (isManual) _isExpenseManual = true;
-    });
-  }
-
-  // NEW: Method to handle updating the income chart limit
-  void _updateIncomeChartMaxY(double newValue, bool isManual) {
-    setState(() {
-      _incomeChartMaxY = newValue;
-      if (isManual) _isIncomeManual = true;
-    });
-  }
-
-  Future<void> _resetTransactions() async {
-    setState(() {
-      _transactions = [];
-    });
-    await _persistenceService.clearTransactions();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Transactions have been reset.')),
-    );
-  }
-
-  Future<void> _resetDays() async {
-    final newInstallDate = DateTime.now();
-    setState(() {
-      _installDate = newInstallDate;
-    });
-    await _persistenceService.saveInstallDate(newInstallDate);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Usage days have been reset.')),
-    );
-  }
-
-  Future<void> _factoryReset() async {
-    await _persistenceService.clearAllData();
-    // After clearing everything, reload the app state to get defaults
-    setState(() {
-      _isLoading = true;
-    });
-    await _loadData();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('App has been reset to factory defaults.')),
-    );
-  }
-
-
-  String get currencySymbol {
-    switch (_selectedCurrency) {
-      case Currency.USD:
-        return '\$';
-      case Currency.INR:
-        return '₹';
-      case Currency.AUD:
-        return 'A\$';
-      case Currency.EUR:
-        return '€';
-      case Currency.LKR:
-        return 'Rs';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-
-    return Scaffold(
-      body: PageView(
-        controller: _pageController,
-        onPageChanged: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-        children: [
-          StatsPage(transactions: _transactions, currencySymbol: currencySymbol, categories: _categories),
-          WalletPage(
-            transactions: _transactions,
-            currencySymbol: currencySymbol,
-            fixedDeposits: _fixedDeposits,
-            savingsPot: _savingsPot,
-            onAddFixedDeposit: _addFixedDeposit,
-            onAddToSavings: _addToSavingsPot,
-            includeFixedDeposits: _includeFixedDepositsInBalance,
-            includeSavings: _includeSavingsInBalance,
-            onEditTransaction: (transaction) => _showAddTransactionModal(context, transaction: transaction),
-            onDeleteTransaction: _deleteTransaction,
-            categories: _categories,
-          ),
-          HomePage(
-            key: ValueKey(_transactions.length),
-            transactions: _transactions,
-            currencySymbol: currencySymbol,
-            categories: _categories,
-            expenseChartMaxY: _expenseChartMaxY,
-            incomeChartMaxY: _incomeChartMaxY,
-            isExpenseManual: _isExpenseManual, // NEW
-            isIncomeManual: _isIncomeManual, // NEW
-            onExpenseChartMaxYChanged: _updateExpenseChartMaxY,
-            onIncomeChartMaxYChanged: _updateIncomeChartMaxY,
-            dailyLimit: _dailyLimit, // NEW
-          ),
-          BudgetPage(
-            currencySymbol: currencySymbol,
-            loans: _loans,
-            onAddLoan: _addLoan,
-            onToggleLoanStatus: _toggleLoanStatus,
-            onAddLoanPayment: _addLoanPayment, // NEW
-            onDeleteLoan: _deleteLoan,
-            onRestoreLoan: _restoreLoan,
-            onPermanentlyDeleteLoan: _permanentlyDeleteLoan,
-          ),
-          ProfilePage(
-            selectedCurrency: _selectedCurrency,
-            onCurrencyChanged: _changeCurrency,
-            transactionCount: _transactions.length,
-            includeFixedDeposits: _includeFixedDepositsInBalance,
-            includeSavings: _includeSavingsInBalance,
-            onIncludeFixedDepositsChanged: (value) {
-              setState(() => _includeFixedDepositsInBalance = value);
-              _saveSettings();
-            },
-            onIncludeSavingsChanged: (value) {
-              setState(() => _includeSavingsInBalance = value);
-              _saveSettings();
-            },
-            categories: _categories,
-            onAddCategory: _addCategory,
-            onUpdateCategory: _updateCategory,
-            onDeleteCategory: _deleteCategory,
-            nickname: _nickname,
-            installDate: _installDate,
-            onNicknameChanged: _updateNickname,
-            onResetTransactions: _resetTransactions,
-            onResetDays: _resetDays,
-            onFactoryReset: _factoryReset,
-            profileImagePath: _profileImagePath, // NEW
-            onProfileImageChanged: _updateProfileImage, // NEW
-            dailyLimit: _dailyLimit, // NEW
-            onDailyLimitChanged: _updateDailyLimit, // NEW
-          ),
-        ],
-      ),
-      bottomNavigationBar: CustomBottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
-        onAddTapped: () => _showAddTransactionModal(context),
-      ),
-    );
-  }
-
-  void _showAddTransactionModal(BuildContext context, {Transaction? transaction}) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return Padding(
-          padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-          child: AddTransactionForm(
-            transactionToEdit: transaction,
-            onAddTransaction: (newTransaction) {
-              if (transaction != null) {
-                _editTransaction(transaction, newTransaction);
-              } else {
-                _addTransaction(newTransaction);
-              }
-            },
-            categories: _categories,
-            currencySymbol: currencySymbol,
-          ),
-        ).animate().slide(begin: const Offset(0, 1), duration: 300.ms, curve: Curves.easeOut);
-      },
-    );
-  }
-}
 
 // --- Home Page Widget (REVAMPED with Weekly Stats) ---
 
@@ -1483,8 +1001,6 @@ class _StatsPageState extends State<StatsPage> {
           return transactionDate.year == now.year && transactionDate.month == now.month;
         case StatsPeriod.yearly:
           return transactionDate.year == now.year;
-        default:
-          return false;
       }
     }).toList();
   }
@@ -1624,7 +1140,7 @@ class _StatsPageState extends State<StatsPage> {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: Colors.grey.shade200,
+        color: context.colors.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -1637,10 +1153,10 @@ class _StatsPageState extends State<StatsPage> {
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 decoration: BoxDecoration(
-                  color: isSelected ? Colors.white : Colors.transparent,
+                  color: isSelected ? context.colors.surface : Colors.transparent,
                   borderRadius: BorderRadius.circular(18),
                   boxShadow: isSelected
-                      ? [BoxShadow(color: Colors.grey.withAlpha(50), spreadRadius: 1, blurRadius: 5)]
+                      ? [BoxShadow(color: context.colors.shadow.withAlpha(30), spreadRadius: 1, blurRadius: 5)]
                       : [],
                 ),
                 child: Center(
@@ -1648,7 +1164,7 @@ class _StatsPageState extends State<StatsPage> {
                     period.name.capitalize(),
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: isSelected ? Colors.indigo : Colors.grey.shade600,
+                      color: isSelected ? context.colors.primary : context.colors.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -1664,11 +1180,11 @@ class _StatsPageState extends State<StatsPage> {
   Widget _buildTypeSelector() {
     return Row(
       children: [
-        _buildTypeSelectorButton(StatsType.expense, 'Expense', Colors.redAccent),
+        _buildTypeSelectorButton(StatsType.expense, 'Expense', context.colors.error),
         const SizedBox(width: 12),
-        _buildTypeSelectorButton(StatsType.comparison, 'Comparison', Colors.indigo),
+        _buildTypeSelectorButton(StatsType.comparison, 'Comparison', context.colors.primary),
         const SizedBox(width: 12),
-        _buildTypeSelectorButton(StatsType.income, 'Income', Colors.green),
+        _buildTypeSelectorButton(StatsType.income, 'Income', context.positive),
       ],
     );
   }
@@ -1682,16 +1198,16 @@ class _StatsPageState extends State<StatsPage> {
           duration: 200.ms,
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: isSelected ? color.withAlpha(25) : Colors.white,
+            color: isSelected ? color.withAlpha(25) : context.colors.surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: isSelected ? color : Colors.grey.shade300),
+            border: Border.all(color: isSelected ? color : context.colors.outlineVariant),
           ),
           child: Center(
             child: Text(
               label,
               style: TextStyle(
                 fontWeight: FontWeight.bold,
-                color: isSelected ? color : Colors.black54,
+                color: isSelected ? color : context.colors.onSurfaceVariant,
               ),
             ),
           ),
@@ -1701,15 +1217,15 @@ class _StatsPageState extends State<StatsPage> {
   }
 
   Widget _buildEmptyState() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 50.0),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 50.0),
       child: Column(
         children: [
-          Icon(Icons.data_usage_rounded, size: 80, color: Colors.grey),
+          Icon(Icons.data_usage_rounded, size: 80, color: context.colors.onSurfaceVariant),
           SizedBox(height: 20),
           Text(
             "No data available for this period.",
-            style: TextStyle(color: Colors.grey, fontSize: 16),
+            style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 16),
             textAlign: TextAlign.center,
           ),
         ],
@@ -1744,12 +1260,13 @@ class _StatsPageState extends State<StatsPage> {
                   minY: 0,
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
+                      getTooltipColor: (_) => context.colors.inverseSurface,
                       getTooltipItems: (List<LineBarSpot> touchedSpots) {
                         return touchedSpots.map((spot) {
                           final type = spot.barIndex == 0 ? 'Income' : 'Expense';
                           return LineTooltipItem(
                             '$type\n${widget.currencySymbol}${spot.y.toStringAsFixed(0)}',
-                            const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            TextStyle(color: context.colors.onInverseSurface, fontWeight: FontWeight.bold),
                           );
                         }).toList();
                       },
@@ -1764,7 +1281,7 @@ class _StatsPageState extends State<StatsPage> {
                           if (value == 0 || value == chartData.maxY) return const Text('');
                           return Text(
                             '${value.toInt()}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 10),
+                            style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 10),
                           );
                         },
                       ),
@@ -1786,7 +1303,7 @@ class _StatsPageState extends State<StatsPage> {
                               return const Text('');
                             }
                           }
-                          return Text(text, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold));
+                          return Text(text, style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 10, fontWeight: FontWeight.bold));
                         },
                         reservedSize: 28,
                       ),
@@ -1796,7 +1313,7 @@ class _StatsPageState extends State<StatsPage> {
                   gridData: FlGridData(
                     show: true,
                     drawVerticalLine: false,
-                    getDrawingHorizontalLine: (value) => const FlLine(color: Colors.black12, strokeWidth: 1),
+                    getDrawingHorizontalLine: (value) => FlLine(color: context.colors.outlineVariant, strokeWidth: 1),
                   ),
                   lineBarsData: [
                     LineChartBarData(
@@ -1804,22 +1321,22 @@ class _StatsPageState extends State<StatsPage> {
                         return FlSpot(index.toDouble(), chartData.incomes[index]);
                       }),
                       isCurved: true,
-                      color: Colors.green,
+                      color: context.positive,
                       barWidth: 3,
                       isStrokeCapRound: true,
                       dotData: const FlDotData(show: false),
-                      belowBarData: BarAreaData(show: true, color: Colors.green.withAlpha(30)),
+                      belowBarData: BarAreaData(show: true, color: context.positive.withAlpha(30)),
                     ),
                     LineChartBarData(
                       spots: List.generate(chartData.labels.length, (index) {
                         return FlSpot(index.toDouble(), chartData.expenses[index]);
                       }),
                       isCurved: true,
-                      color: Colors.blue,
+                      color: context.colors.primary,
                       barWidth: 3,
                       isStrokeCapRound: true,
                       dotData: const FlDotData(show: false),
-                      belowBarData: BarAreaData(show: true, color: Colors.blue.withAlpha(30)),
+                      belowBarData: BarAreaData(show: true, color: context.colors.primary.withAlpha(30)),
                     ),
                   ],
                 ),
@@ -1839,9 +1356,9 @@ class _StatsPageState extends State<StatsPage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        _buildLegendItem(Colors.green, 'Income'),
+        _buildLegendItem(context.positive, 'Income'),
         const SizedBox(width: 20),
-        _buildLegendItem(Colors.blue, 'Expense'),
+        _buildLegendItem(context.colors.primary, 'Expense'),
       ],
     );
   }
@@ -1919,7 +1436,7 @@ class _StatsPageState extends State<StatsPage> {
                 children: [
                   Text(
                     _selectedType.name.capitalize(),
-                    style: const TextStyle(color: Colors.grey, fontSize: 16),
+                    style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 16),
                   ),
                   Text(
                     '${widget.currencySymbol}${totalValue.toStringAsFixed(2)}',
@@ -1992,6 +1509,7 @@ class CategoryStatItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tint = context.readable(color);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Column(
@@ -1999,8 +1517,8 @@ class CategoryStatItem extends StatelessWidget {
           Row(
             children: [
               CircleAvatar(
-                backgroundColor: color.withAlpha(25),
-                child: Icon(icon, color: color, size: 20),
+                backgroundColor: tint.withAlpha(25),
+                child: Icon(icon, color: tint, size: 20),
               ),
               const SizedBox(width: 12),
               Expanded(child: Text(categoryName, style: const TextStyle(fontWeight: FontWeight.w500))),
@@ -2023,8 +1541,8 @@ class CategoryStatItem extends StatelessWidget {
             builder: (context, value, child) {
               return LinearProgressIndicator(
                 value: value,
-                backgroundColor: color.withAlpha(50),
-                color: color,
+                backgroundColor: tint.withAlpha(50),
+                color: tint,
                 borderRadius: BorderRadius.circular(10),
               );
             },
@@ -2040,6 +1558,7 @@ class CategoryStatItem extends StatelessWidget {
 class WalletPage extends StatelessWidget {
   final List<Transaction> transactions;
   final String currencySymbol;
+  final double? trackedBalance;
   final List<FixedDeposit> fixedDeposits;
   final double savingsPot;
   final Function(FixedDeposit) onAddFixedDeposit;
@@ -2055,6 +1574,7 @@ class WalletPage extends StatelessWidget {
     super.key,
     required this.transactions,
     required this.currencySymbol,
+    this.trackedBalance,
     required this.fixedDeposits,
     required this.savingsPot,
     required this.onAddFixedDeposit,
@@ -2098,7 +1618,7 @@ class WalletPage extends StatelessWidget {
 
     final double totalFixedDeposits = fixedDeposits.fold(0.0, (sum, item) => sum + item.amount);
 
-    double totalBalance = incomeAndExpenseBalance;
+    double totalBalance = trackedBalance ?? incomeAndExpenseBalance;
     if (includeFixedDeposits) {
       totalBalance += totalFixedDeposits;
     }
@@ -2144,10 +1664,10 @@ class WalletPage extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           if (transactions.isEmpty)
-            const Center(
+            Center(
               child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 32.0),
-                child: Text("No transactions yet.", style: TextStyle(color: Colors.grey)),
+                padding: const EdgeInsets.symmetric(vertical: 32.0),
+                child: Text("No transactions yet.", style: TextStyle(color: context.colors.onSurfaceVariant)),
               ),
             )
           else
@@ -2187,8 +1707,8 @@ class WalletPage extends StatelessWidget {
                     label: const Text('Add Deposit'),
                     onPressed: () => _showAddDepositDialog(context),
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.amber.shade800,
-                      side: BorderSide(color: Colors.amber.shade800),
+                      foregroundColor: context.readable(Colors.amber.shade800),
+                      side: BorderSide(color: context.readable(Colors.amber.shade800)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -2201,8 +1721,8 @@ class WalletPage extends StatelessWidget {
                     label: const Text('Add Savings'),
                     onPressed: () => _showAddSavingsDialog(context),
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.blueGrey,
-                      side: const BorderSide(color: Colors.blueGrey),
+                      foregroundColor: context.colors.onSurfaceVariant,
+                      side: BorderSide(color: context.colors.onSurfaceVariant),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -2511,7 +2031,7 @@ class _BudgetPageState extends State<BudgetPage> {
     final deletedLoans = widget.loans.where((l) => l.isDeleted).toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6FA),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text('Loan Manager'),
         actions: [
@@ -2543,8 +2063,6 @@ class _BudgetPageState extends State<BudgetPage> {
       ).animate().fadeIn(duration: 500.ms),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showAddLoanDialog(),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
         label: const Text("New Loan"),
       ).animate().scale(),
@@ -2574,11 +2092,11 @@ class _BudgetPageState extends State<BudgetPage> {
       child: Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: context.colors.surface,
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.grey.withAlpha(25),
+              color: context.colors.shadow.withAlpha(25),
               blurRadius: 20,
               offset: const Offset(0, 5),
             )
@@ -2587,12 +2105,12 @@ class _BudgetPageState extends State<BudgetPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _buildStatItem("You Lent", '${widget.currencySymbol}${totalGiven.toStringAsFixed(2)}', Colors.green),
+            _buildStatItem("You Lent", '${widget.currencySymbol}${totalGiven.toStringAsFixed(2)}', context.positive),
             const SizedBox(
               height: 50,
               child: VerticalDivider(),
             ),
-            _buildStatItem("You Owe", '${widget.currencySymbol}${totalTaken.toStringAsFixed(2)}', Colors.redAccent),
+            _buildStatItem("You Owe", '${widget.currencySymbol}${totalTaken.toStringAsFixed(2)}', context.colors.error),
           ],
         ),
       ),
@@ -2605,7 +2123,7 @@ class _BudgetPageState extends State<BudgetPage> {
       children: [
         Text(
           label,
-          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 14, color: context.colors.onSurfaceVariant),
         ),
         const SizedBox(height: 8),
         Text(
@@ -2622,7 +2140,7 @@ class _BudgetPageState extends State<BudgetPage> {
       child: Container(
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: Colors.grey.shade200,
+          color: context.colors.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
@@ -2654,12 +2172,12 @@ class _BudgetPageState extends State<BudgetPage> {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: isSelected ? Colors.white : Colors.transparent,
+            color: isSelected ? context.colors.surface : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             boxShadow: isSelected
                 ? [
               BoxShadow(
-                color: Colors.grey.withAlpha(50),
+                color: context.colors.shadow.withAlpha(30),
                 blurRadius: 5,
                 spreadRadius: 1,
               )
@@ -2671,7 +2189,7 @@ class _BudgetPageState extends State<BudgetPage> {
               title,
               style: TextStyle(
                 fontWeight: FontWeight.bold,
-                color: isSelected ? Colors.black : Colors.grey.shade600,
+                color: isSelected ? context.colors.onSurface : context.colors.onSurfaceVariant,
               ),
             ),
           ),
@@ -2686,16 +2204,16 @@ class _BudgetPageState extends State<BudgetPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.inbox_outlined, size: 80, color: Colors.grey.shade300),
+            Icon(Icons.inbox_outlined, size: 80, color: context.colors.outlineVariant),
             const SizedBox(height: 16),
             Text(
               'All Clear!',
-              style: TextStyle(fontSize: 18, color: Colors.grey.shade800, fontWeight: FontWeight.bold),
+              style: TextStyle(fontSize: 18, color: context.colors.onSurface, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 4),
             Text(
               'No loans in this category.',
-              style: TextStyle(color: Colors.grey.shade600),
+              style: TextStyle(color: context.colors.onSurfaceVariant),
             ),
           ],
         ),
@@ -2764,18 +2282,18 @@ class LoanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isGiven = loan.type == LoanType.given;
-    final color = isGiven ? Colors.green : Colors.redAccent;
+    final color = isGiven ? context.positive : context.colors.error;
     final progress = loan.amount > 0 ? (loan.paidAmount / loan.amount).clamp(0.0, 1.0) : 0.0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8.0),
       padding: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: context.colors.surface,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(10),
+            color: context.colors.shadow.withAlpha(20),
             blurRadius: 8,
             offset: const Offset(0, 2),
           )
@@ -2809,7 +2327,7 @@ class LoanCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               loan.reason!,
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 12),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -2823,7 +2341,7 @@ class LoanCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
                       value: progress,
-                      backgroundColor: Colors.grey.shade200,
+                      backgroundColor: context.colors.surfaceContainerHighest,
                       valueColor: AlwaysStoppedAnimation<Color>(color.withOpacity(0.7)),
                       minHeight: 6,
                     ),
@@ -2832,14 +2350,14 @@ class LoanCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(
                   '${(progress * 100).toInt()}%',
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 10, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 10, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
             const SizedBox(height: 4),
             Text(
               'Paid: $currencySymbol${loan.paidAmount.toStringAsFixed(2)} / $currencySymbol${loan.amount.toStringAsFixed(2)}',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+              style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 11),
             ),
           ],
           const SizedBox(height: 4),
@@ -2848,7 +2366,7 @@ class LoanCard extends StatelessWidget {
             children: [
               Text(
                 'Date: ${DateFormat.yMMMd().format(loan.date)}',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
+                style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 11),
               ),
               _buildActionMenu(context),
             ],
@@ -2874,16 +2392,16 @@ class LoanCard extends StatelessWidget {
         items.addAll([
           const PopupMenuItem(value: 'restore', child: Text('Restore Loan')),
           const PopupMenuDivider(),
-          const PopupMenuItem(
+          PopupMenuItem(
             value: 'delete_perm',
-            child: Text('Delete Permanently', style: TextStyle(color: Colors.redAccent)),
+            child: Text('Delete Permanently', style: TextStyle(color: context.colors.error)),
           ),
         ]);
         break;
     }
 
     return PopupMenuButton<String>(
-      icon: Icon(Icons.more_horiz_rounded, color: Colors.grey.shade600),
+      icon: Icon(Icons.more_horiz_rounded, color: context.colors.onSurfaceVariant),
       onSelected: (value) {
         if (value == 'toggle_paid') onTogglePaid?.call();
         if (value == 'add_payment') _showAddPaymentDialog(context);
@@ -2936,6 +2454,8 @@ class LoanCard extends StatelessWidget {
 // --- MODIFIED: Profile Page Widget ---
 
 class ProfilePage extends StatelessWidget {
+  final ThemeMode themeMode;
+  final Future<bool> Function(ThemeMode)? onThemeModeChanged;
   final Currency selectedCurrency;
   final Function(Currency) onCurrencyChanged;
   final int transactionCount;
@@ -2957,9 +2477,10 @@ class ProfilePage extends StatelessWidget {
   final Function(String) onProfileImageChanged;
   final double? dailyLimit; // NEW
   final Function(double?) onDailyLimitChanged; // NEW
-  final Uri _url = Uri.parse("https://lexora-f693c.web.app/store.html");// NEW
 
   ProfilePage({
+    this.themeMode = ThemeMode.system,
+    this.onThemeModeChanged,
     super.key,
     required this.selectedCurrency,
     required this.onCurrencyChanged,
@@ -2983,12 +2504,6 @@ class ProfilePage extends StatelessWidget {
     this.dailyLimit, // NEW
     required this.onDailyLimitChanged, // NEW
   });
-
-  Future<void> _launchUrl() async {
-    if (!await launchUrl(_url, mode: LaunchMode.externalApplication)) {
-      throw Exception('Could not launch $_url');
-    }
-  }
 
   void _showDailyLimitDialog(BuildContext context) {
     final TextEditingController _limitController = TextEditingController(
@@ -3015,7 +2530,7 @@ class ProfilePage extends StatelessWidget {
             ElevatedButton(
               onPressed: () {
                 final double? limit = double.tryParse(_limitController.text);
-                if (limit != null) {
+                if (limit != null && limit.isFinite && limit >= 0) {
                   onDailyLimitChanged(limit);
                 } else if (_limitController.text.isEmpty) {
                   onDailyLimitChanged(0.0); // Clear limit
@@ -3071,28 +2586,18 @@ class ProfilePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // NEW: Calculate total days since app install
-    final int totalDays = installDate != null
-        ? DateTime.now().difference(installDate!).inDays + 1
-        : 1;
-
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 20.0),
-          children: [
-            _buildProfileHeader(context),
-            const SizedBox(height: 20),
-            _buildStatsCard(totalDays), // Pass calculated days
-            const SizedBox(height: 20),
-            _buildPremiumBanner(context),
-            const SizedBox(height: 20),
-            _buildSettingsList(context),
-          ],
-        ).animate().fadeIn(duration: 500.ms),
-      ),
-    );
+    final totalDays = installDate == null ? 1 : DateTime.now().difference(installDate!).inDays + 1;
+    return _Page(storageKey: 'settings', children: [
+      const _Heading('Settings'),
+      _Surface(child: _buildProfileHeader(context)),
+      _Section('Your activity'),
+      _Surface(child: Wrap(spacing: 32, runSpacing: 12, children: [
+        _buildStatItem(context, 'Days tracked', totalDays.toString()),
+        _buildStatItem(context, 'Transactions', transactionCount.toString()),
+      ])),
+      _Section('Preferences'),
+      _Surface(child: _buildSettingsList(context)),
+    ]);
   }
 
   // MODIFIED: This widget now displays the profile image
@@ -3111,11 +2616,11 @@ class ProfilePage extends StatelessWidget {
             onTap: _pickImage,
             child: CircleAvatar(
               radius: 40,
-              backgroundColor: const Color(0xFFFFF3E0),
+              backgroundColor: context.colors.secondaryContainer,
               backgroundImage: backgroundImage, // Use the selected image
               // Show the person icon only if no image is selected
               child: backgroundImage == null
-                  ? const Icon(Icons.person, size: 50, color: Color(0xFFFDB846))
+                  ? Icon(Icons.person, size: 50, color: context.colors.onSecondaryContainer)
                   : null,
             ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
           ),
@@ -3130,7 +2635,7 @@ class ProfilePage extends StatelessWidget {
                   style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(width: 8),
-                Icon(Icons.edit, size: 18, color: Colors.grey.shade600),
+                Icon(Icons.edit, size: 18, color: context.colors.onSurfaceVariant),
               ],
             ),
           ),
@@ -3139,34 +2644,7 @@ class ProfilePage extends StatelessWidget {
     );
   }
 
-  Widget _buildStatsCard(int totalDays) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20.0),
-      padding: const EdgeInsets.symmetric(vertical: 20.0),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15.0),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withAlpha(25),
-            spreadRadius: 2,
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatItem("Current Streak", "1"),
-          _buildStatItem("Total Days", totalDays.toString()), // Use calculated days
-          _buildStatItem("Transactions", transactionCount.toString()),
-        ],
-      ),
-    ).animate(delay: 200.ms).slideY(begin: 0.5).fadeIn();
-  }
-
-  Widget _buildStatItem(String label, String value) {
+  Widget _buildStatItem(BuildContext context, String label, String value) {
     return Column(
       children: [
         Text(
@@ -3176,50 +2654,10 @@ class ProfilePage extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           label,
-          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 14, color: context.colors.onSurfaceVariant),
         ),
       ],
     );
-  }
-
-  Widget _buildPremiumBanner(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20.0),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFFFEEA9E), Color(0xFFFDB846)],
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-          ),
-          borderRadius: BorderRadius.circular(15.0),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Icon(Icons.safety_check, color: Color(0xFF4A4333)),
-            const SizedBox(width: 12),
-            const Text(
-              "Powered By LEXORA",
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-                color: Color(0xFF4A4333),
-              ),
-            ),
-            Spacer(),
-
-            Expanded(
-              child: GestureDetector(
-                onTap: _launchUrl,
-
-                child:
-                const Icon(Icons.chevron_right, color: Color(0xFF4A4333)),),),
-          ],
-        ),
-      ),
-    ).animate(delay: 400.ms).slideY(begin: 0.5).fadeIn();
   }
 
   Widget _buildSettingsList(BuildContext context) {
@@ -3227,6 +2665,15 @@ class ProfilePage extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20.0),
       child: Column(
         children: [
+          if (onThemeModeChanged != null)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const _IconChip(Icons.brightness_6_outlined),
+              title: const Text('Appearance'),
+              subtitle: Text(themeMode.name.capitalize()),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _chooseAppearance(context),
+            ),
           _buildCurrencySettingItem(context),
           const Divider(height: 30),
           SettingsListItem(
@@ -3239,7 +2686,7 @@ class ProfilePage extends StatelessWidget {
           ),
           SettingsListItem(
             icon: Icons.account_balance_wallet,
-            iconColor: Colors.green,
+            iconColor: context.positive,
             title: "Balance Calculation",
             onTap: () {
               Navigator.of(context).push(MaterialPageRoute(
@@ -3289,16 +2736,51 @@ class ProfilePage extends StatelessWidget {
     );
   }
 
+  Future<void> _chooseAppearance(BuildContext context) async {
+    final selection = await showDialog<ThemeMode>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Appearance'),
+        children: [
+          for (final (mode, icon, label) in const [
+            (ThemeMode.system, Icons.settings_brightness_outlined, 'System'),
+            (ThemeMode.light, Icons.light_mode_outlined, 'Light'),
+            (ThemeMode.dark, Icons.dark_mode_outlined, 'Dark'),
+          ])
+            ListTile(
+              leading: Icon(icon),
+              title: Text(label),
+              subtitle: mode == ThemeMode.system ? const Text('Follow device settings') : null,
+              selected: mode == themeMode,
+              trailing: mode == themeMode ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(context, mode),
+            ),
+        ],
+      ),
+    );
+    if (selection == null || selection == themeMode || !context.mounted) return;
+    try {
+      if (await onThemeModeChanged!(selection)) return;
+    } catch (_) {
+      // Keep the previous appearance if saving fails.
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Couldn’t save the appearance setting.')),
+      );
+    }
+  }
+
   Widget _buildCurrencySettingItem(BuildContext context) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: Colors.grey.shade200,
+          color: context.colors.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: const Icon(Icons.attach_money, color: Colors.grey),
+        child: Icon(Icons.attach_money, color: context.colors.onSurfaceVariant),
       ),
       title: const Text("Base Currency", style: TextStyle(fontWeight: FontWeight.w500)),
       trailing: DropdownButtonHideUnderline(
@@ -3346,13 +2828,13 @@ class SettingsListItem extends StatelessWidget {
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: iconColor.withAlpha(25),
+          color: context.readable(iconColor).withAlpha(28),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Icon(icon, color: iconColor),
+        child: Icon(icon, color: context.readable(iconColor)),
       ),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
-      trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+      trailing: Icon(Icons.chevron_right, color: context.colors.onSurfaceVariant),
     );
   }
 }
@@ -3367,11 +2849,11 @@ class CustomCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: context.colors.surface,
         borderRadius: BorderRadius.circular(20.0),
         boxShadow: [
           BoxShadow(
-            color: Colors.grey.withAlpha(25),
+            color: context.colors.shadow.withAlpha(25),
             spreadRadius: 2,
             blurRadius: 10,
             offset: const Offset(0, 5),
@@ -3402,6 +2884,7 @@ class TransactionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tint = context.readable(color);
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -3412,8 +2895,8 @@ class TransactionTile extends StatelessWidget {
           child: Row(
             children: [
               CircleAvatar(
-                backgroundColor: color.withAlpha(25),
-                child: Icon(icon, color: color, size: 20),
+                backgroundColor: tint.withAlpha(25),
+                child: Icon(icon, color: tint, size: 20),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -3428,7 +2911,7 @@ class TransactionTile extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       DateFormat.jm().format(transaction.date), // Shows time like 5:08 PM
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 12),
                     ),
                   ],
                 ),
@@ -3436,7 +2919,7 @@ class TransactionTile extends StatelessWidget {
               Text(
                 '${transaction.isExpense ? '-' : '+'}$currencySymbol${transaction.amount.toStringAsFixed(2)}',
                 style: TextStyle(
-                  color: transaction.isExpense ? Colors.redAccent : Colors.green,
+                  color: transaction.isExpense ? context.colors.error : context.positive,
                   fontWeight: FontWeight.bold,
                   fontSize: 16,
                 ),
@@ -3483,9 +2966,9 @@ class _AddLoanFormState extends State<AddLoanForm> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25.0)),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(25.0)),
       ),
       padding: const EdgeInsets.all(20.0),
       child: Form(
@@ -3504,11 +2987,11 @@ class _AddLoanFormState extends State<AddLoanForm> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       decoration: BoxDecoration(
-                        color: _loanType == LoanType.given ? Colors.green.withAlpha(25) : Colors.grey[200],
+                        color: _loanType == LoanType.given ? context.positive.withAlpha(25) : context.colors.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _loanType == LoanType.given ? Colors.green : Colors.transparent),
+                        border: Border.all(color: _loanType == LoanType.given ? context.positive : Colors.transparent),
                       ),
-                      child: Center(child: Text('Given', style: TextStyle(fontWeight: FontWeight.bold, color: _loanType == LoanType.given ? Colors.green : Colors.black54))),
+                      child: Center(child: Text('Given', style: TextStyle(fontWeight: FontWeight.bold, color: _loanType == LoanType.given ? context.positive : context.colors.onSurfaceVariant))),
                     ),
                   ),
                 ),
@@ -3519,11 +3002,11 @@ class _AddLoanFormState extends State<AddLoanForm> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       decoration: BoxDecoration(
-                        color: _loanType == LoanType.taken ? Colors.red.withAlpha(25) : Colors.grey[200],
+                        color: _loanType == LoanType.taken ? context.colors.error.withAlpha(25) : context.colors.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _loanType == LoanType.taken ? Colors.redAccent : Colors.transparent),
+                        border: Border.all(color: _loanType == LoanType.taken ? context.colors.error : Colors.transparent),
                       ),
-                      child: Center(child: Text('Taken', style: TextStyle(fontWeight: FontWeight.bold, color: _loanType == LoanType.taken ? Colors.redAccent : Colors.black54))),
+                      child: Center(child: Text('Taken', style: TextStyle(fontWeight: FontWeight.bold, color: _loanType == LoanType.taken ? context.colors.error : context.colors.onSurfaceVariant))),
                     ),
                   ),
                 ),
@@ -3556,8 +3039,8 @@ class _AddLoanFormState extends State<AddLoanForm> {
             ElevatedButton(
               onPressed: _submit,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.indigo,
-                foregroundColor: Colors.white,
+                backgroundColor: context.colors.primary,
+                foregroundColor: context.colors.onPrimary,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
@@ -3681,7 +3164,7 @@ class _AddTransactionFormState extends State<AddTransactionForm> {
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25.0)),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(25.0)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -3978,11 +3461,11 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: context.colors.surface,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.grey.withAlpha(20),
+            color: context.colors.shadow.withAlpha(20),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -4005,7 +3488,7 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
                       widget.dateKey,
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Colors.grey.shade700,
+                        color: context.colors.onSurfaceVariant,
                         fontSize: 16,
                       ),
                     ),
@@ -4016,12 +3499,12 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
                       if (dailyIncome > 0)
                         Text(
                           '+${widget.currencySymbol}${dailyIncome.toStringAsFixed(2)}',
-                          style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                          style: TextStyle(color: context.positive, fontWeight: FontWeight.bold),
                         ),
                       if (dailyExpense > 0)
                         Text(
                           '-${widget.currencySymbol}${dailyExpense.toStringAsFixed(2)}',
-                          style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
+                          style: TextStyle(color: context.colors.error, fontWeight: FontWeight.bold),
                         ),
                     ],
                   ),
@@ -4029,9 +3512,9 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
                   AnimatedRotation(
                     turns: _isExpanded ? 0.5 : 0,
                     duration: 300.ms,
-                    child: const Icon(
+                    child: Icon(
                       Icons.expand_more,
-                      color: Colors.grey,
+                      color: context.colors.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -4052,7 +3535,7 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
                     onDismissed: (direction) => widget.onDeleteTransaction(t),
                     background: Container(
                       decoration: BoxDecoration(
-                        color: Colors.redAccent,
+                        color: context.colors.error,
                         borderRadius: BorderRadius.only(
                           bottomLeft: widget.transactions.last == t ? const Radius.circular(12) : Radius.zero,
                           bottomRight: widget.transactions.last == t ? const Radius.circular(12) : Radius.zero,
@@ -4060,7 +3543,7 @@ class _DailyTransactionSummaryCardState extends State<DailyTransactionSummaryCar
                       ),
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: const Icon(Icons.delete, color: Colors.white),
+                      child: Icon(Icons.delete, color: context.colors.onError),
                     ),
                     child: TransactionTile(
                       transaction: t,
@@ -4192,7 +3675,7 @@ class _CategoryManagerPageState extends State<CategoryManagerPage> with SingleTi
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             leading: CircleAvatar(
               backgroundColor: category.color,
-              child: Icon(category.icon, color: Colors.white, size: 20),
+              child: Icon(category.icon, color: ThemeData.estimateBrightnessForColor(category.color) == Brightness.dark ? Colors.white : Colors.black, size: 20),
             ),
             title: Text(category.name, style: const TextStyle(fontWeight: FontWeight.bold)),
             trailing: isProtected
@@ -4250,8 +3733,7 @@ class _CategoryManagerPageState extends State<CategoryManagerPage> with SingleTi
         },
         label: const Text('New Category'),
         icon: const Icon(Icons.add),
-        backgroundColor: Colors.lightBlue,
-      ).animate().scale(),
+              ).animate().scale(),
     );
   }
 }
@@ -4331,9 +3813,9 @@ class _AddEditCategorySheetState extends State<AddEditCategorySheet> {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(20.0),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25.0)),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(25.0)),
       ),
       child: Form(
         key: _formKey,
@@ -4356,8 +3838,8 @@ class _AddEditCategorySheetState extends State<AddEditCategorySheet> {
             ElevatedButton(
               onPressed: _submit,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.indigo,
-                foregroundColor: Colors.white,
+                backgroundColor: context.colors.primary,
+                foregroundColor: context.colors.onPrimary,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
@@ -4405,11 +3887,11 @@ class _AddEditCategorySheetState extends State<AddEditCategorySheet> {
                   width: 50,
                   height: 50,
                   decoration: BoxDecoration(
-                    color: isSelected ? _selectedColor.withAlpha(50) : Colors.grey.shade200,
+                    color: isSelected ? _selectedColor.withAlpha(50) : context.colors.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(12),
                     border: isSelected ? Border.all(color: _selectedColor, width: 2) : null,
                   ),
-                  child: Icon(icon, color: isSelected ? _selectedColor : Colors.grey.shade600),
+                  child: Icon(icon, color: isSelected ? context.readable(_selectedColor) : context.colors.onSurfaceVariant),
                 ),
               );
             },
@@ -4521,7 +4003,7 @@ class RecurringSettingsPage extends StatelessWidget {
               onConfirm();
               Navigator.of(ctx).pop();
             },
-            child: const Text('Confirm', style: TextStyle(color: Colors.red)),
+            child: Text('Confirm', style: TextStyle(color: context.colors.error)),
           ),
         ],
       ),
@@ -4562,8 +4044,8 @@ class RecurringSettingsPage extends StatelessWidget {
           ),
           const Divider(),
           ListTile(
-            leading: const Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
-            title: const Text('Factory Reset', style: TextStyle(color: Colors.redAccent)),
+            leading: Icon(Icons.warning_amber_rounded, color: context.colors.error),
+            title: Text('Factory Reset', style: TextStyle(color: context.colors.error)),
             subtitle: const Text('This will erase all app data, including transactions, loans, categories, and settings.'),
             onTap: () => _showConfirmationDialog(
               context,
@@ -4591,7 +4073,7 @@ extension StringExtension on String {
 
 // --- MODIFIED: Persistence Service with new methods ---
 
-class PersistenceService {
+class _PersistenceService {
   Future<Directory> get _localPath async {
     return await getApplicationDocumentsDirectory();
   }
@@ -4618,20 +4100,29 @@ class PersistenceService {
     }
   }
 
-  // --- Transactions ---
-  Future<void> saveTransactions(List<Transaction> transactions) async {
-    final data = transactions.map((t) => t.toJson()).toList();
-    await _saveJsonToFile('transactions.json', data);
+  Future<void> _ledgerWrite = Future<void>.value();
+
+  Future<_Ledger> loadLedger() async {
+    final file = await _getLocalFile('ledger.json');
+    if (await file.exists()) {
+      return _Ledger.fromJson(json.decode(await file.readAsString()) as Map<String, dynamic>);
+    }
+    final legacy = await _getLocalFile('transactions.json');
+    if (!await legacy.exists()) return const _Ledger();
+    final data = (json.decode(await legacy.readAsString()) as List).cast<Map<String, dynamic>>();
+    return _Ledger(transactions: data.map(Transaction.fromJson).toList());
   }
 
-  Future<List<Transaction>> loadTransactions() async {
-    final data = await _loadJsonFromFile('transactions.json');
-    return data.map((json) => Transaction.fromJson(json)).toList();
-  }
-
-  // NEW: Clear transactions
-  Future<void> clearTransactions() async {
-    await _saveJsonToFile('transactions.json', []);
+  Future<void> saveLedger(_Ledger ledger) {
+    final contents = json.encode(ledger.toJson());
+    final write = _ledgerWrite.then((_) async {
+      final file = await _getLocalFile('ledger.json');
+      final staging = File('${file.path}.tmp');
+      await staging.writeAsString(contents, flush: true);
+      await staging.rename(file.path);
+    });
+    _ledgerWrite = write.then<void>((_) {}, onError: (Object _) {});
+    return write;
   }
 
   // --- Categories ---
@@ -4751,7 +4242,12 @@ class PersistenceService {
   // --- Factory Reset ---
   Future<void> clearAllData() async {
     // Clear all JSON files
-    final fileNames = ['transactions.json', 'categories.json', 'loans.json', 'fixed_deposits.json'];
+    await _ledgerWrite;
+    for (final name in ['ledger.json', 'ledger.json.tmp', 'transactions.json']) {
+      final file = await _getLocalFile(name);
+      if (await file.exists()) await file.delete();
+    }
+    final fileNames = ['categories.json', 'loans.json', 'fixed_deposits.json'];
     for (var fileName in fileNames) {
       try {
         final file = await _getLocalFile(fileName);
@@ -4766,9 +4262,13 @@ class PersistenceService {
     // Clear SharedPreferences, but keep the install date
     final prefs = await SharedPreferences.getInstance();
     final installDate = prefs.getString('installDate'); // Save it before clearing
+    final appearance = prefs.getString(appearancePreferenceKey);
     await prefs.clear();
     if (installDate != null) {
       await prefs.setString('installDate', installDate); // Restore it
+    }
+    if (appearance != null) {
+      await prefs.setString(appearancePreferenceKey, appearance);
     }
   }
 }
